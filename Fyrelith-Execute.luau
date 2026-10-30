@@ -7327,7 +7327,7 @@ local store="AASmartPlacement"
 local runtimeFile=E.FyrelithBoot.accountPath("runtime.luau")
 local settingsFile=E.FyrelithBoot.accountPath("settings.json")
 local HTTP=game:GetService("HttpService")
-local fields={"autoJoinInfinite","storyAutomationEnabled","developmentAllowed","kaiTunConfigured","kaiTunPaused","autoDaily","autoInfiniteRetry","autoRedeem","arcRunKind","autoInfinite","infiniteStage","skipWaveLimitEnabled","skipWaveLimit","infiniteEndEnabled","infiniteEndWave","reserve","upgradeEnabled","autoStart","autoNext","autoRetry","autoRewards","elementEnabled","enabled","autorun",
+local fields={"disable3D","autoJoinInfinite","storyAutomationEnabled","developmentAllowed","kaiTunConfigured","kaiTunPaused","autoDaily","autoInfiniteRetry","autoRedeem","arcRunKind","autoInfinite","infiniteStage","skipWaveLimitEnabled","skipWaveLimit","infiniteEndEnabled","infiniteEndWave","reserve","upgradeEnabled","autoStart","autoNext","autoRetry","autoRewards","elementEnabled","enabled","autorun",
     "lobbyRewards","battlePassRewards","levelRewards","valueUpgrades","dynamicReserve","safeSkip","autoSkipWave","autoTarget","mobileMode","autoTeam","autoArcSkip","arcAutoFeed","arcAutoFuse","arcWorld","arcStage","arcMainAttack","finalWaveSell","questFarm","farmEnabled","stackEnabled","airDefense",
     "feedEnabled","evolveEnabled","feedTarget","feedItem","feedBudget","evolveBudget","fuseBudget","fuseRarities","developmentTargets","autoFeedSelected","autoFuseSelected","autoBestDevelopment","autoBestThresholdHandled","autoBestManualOff","autoBestPolicyOwner","starterSetupSnapshot"}
 function S.settingsSnapshot()
@@ -7544,6 +7544,50 @@ function S.installKaiTunControls()
     S.setKaiTunPaused(S.kaiTunPaused)
 end
 -- KAI TUN CONTROLLER END
+-- FYRELITH_SHARED_CONFIG_DEFAULTS_V1: settings only, never account/session progress.
+local sharedConfigDefaults={
+    airDefense=true,
+    arcAutoFeed=false,
+    arcAutoFuse=false,
+    autoBestDevelopment=true,
+    autoDaily=true,
+    autoFeedSelected=false,
+    autoFuseSelected=false,
+    autoInfinite=true,
+    autoInfiniteRetry=true,
+    autoJoinInfinite=false,
+    autoNext=true,
+    autoRedeem=true,
+    autoRetry=false,
+    autoRewards=true,
+    autoSkipWave=true,
+    autoStart=true,
+    autoTarget=true,
+    autoTeam=true,
+    autorun=true,
+    battlePassRewards=true,
+    developmentAllowed=true,
+    disable3D=true,
+    dynamicReserve=true,
+    elementEnabled=true,
+    evolveEnabled=false,
+    farmEnabled=true,
+    feedEnabled=false,
+    finalWaveSell=true,
+    infiniteEndEnabled=false,
+    infiniteEndWave=46,
+    kaiTunPaused=false,
+    levelRewards=true,
+    lobbyRewards=true,
+    mobileMode=false,
+    safeSkip=false,
+    skipWaveLimit=38,
+    skipWaveLimitEnabled=false,
+    stackEnabled=false,
+    storyAutomationEnabled=true,
+    upgradeEnabled=true,
+    valueUpgrades=true,
+}
 S.loadStartup=function()
     local settings=startupSettings
     if not settings and type(readfile)=='function' then
@@ -7559,6 +7603,10 @@ S.loadStartup=function()
     end
     S.settingsRestored=type(settings)=='table'
     S.configureKaiTun()
+    -- Saved per-device choices win. Missing values use the shared starting preset.
+    for key,value in pairs(sharedConfigDefaults) do
+        if type(settings)~='table' or settings[key]==nil then S[key]=value end
+    end
     -- Repair conflicting saved flags conservatively; a valid both-OFF state stays OFF.
     if S.storyAutomationEnabled then S.setStoryAutomation(true,false)
     elseif S.autoJoinInfinite then S.setAutoJoinInfinite(true,false)
@@ -10849,7 +10897,7 @@ end
 local st={connections={},rows={},options={}} E.FyrelithExpandedSettings=st
 local function on(sig,fn) table.insert(st.connections,sig:Connect(fn)) end
 local H=game:GetService('HttpService') local path='AASmartPlacement/user_config_'..game.Players.LocalPlayer.UserId..'.json'
-S.disable3D=true
+if S.disable3D==nil then S.disable3D=true end
 local groups={
  {'CONTROL',{'Paused','kaiTunPaused'},{'Teleport Autorun','autorun'},{'Disable 3D','disable3D'}},
  {'BATTLE',{'Smart Upgrades','upgradeEnabled'},{'Damage Type Counters','elementEnabled'},{'Auto Target','autoTarget'},{'Air Defense','airDefense'},{'Farm Units','farmEnabled'},{'Stack Placement','stackEnabled'},{'Value Upgrades','valueUpgrades'},{'Dynamic Reserve','dynamicReserve'},{'Final Wave Sell','finalWaveSell'},{'Mobile Mode','mobileMode'}},
@@ -11675,7 +11723,7 @@ local run=game:GetService('RunService')
 local H=game:GetService('HttpService')
 local player=game:GetService('Players').LocalPlayer
 local path='AASmartPlacement/disable3d_'..player.UserId..'_'..game.GameId..'.json'
-local state={Alive=true,Enabled=true,Opacity=.9,Connections={}}
+local state={Alive=true,Enabled=not E.AASmartPlacement or E.AASmartPlacement.disable3D~=false,Opacity=.9,Connections={}}
 E.FyrelithDisable3D=state
 pcall(function()local data=H:JSONDecode(readfile(path));if type(data.Enabled)=='boolean'then state.Enabled=data.Enabled end end)
 local original={Color=backdrop.BackgroundColor3,Transparency=backdrop.BackgroundTransparency,Visible=backdrop.Visible}
