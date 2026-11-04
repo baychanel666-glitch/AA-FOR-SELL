@@ -26,7 +26,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-05-stop-fix-20'
+getgenv().FyrelithBuild='2026-11-05-stability-fix-24'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -98,7 +98,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-05-stop-fix-20'}
+local M={build='2026-11-05-stability-fix-24'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -868,7 +868,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-05-stop-fix-20'
+ local E=getgenv()local expected='2026-11-05-stability-fix-24'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -1174,7 +1174,7 @@ local function brand(state)
  for _,v in root:GetChildren() do if v:IsA("GuiObject") then v.Position=v.Position+UDim2.fromOffset(0,200) end end
  root.Size=UDim2.fromOffset(900,710) root.AnchorPoint=Vector2.new(.5,.5) root.Position=UDim2.fromScale(.5,.5)
  local icon=Instance.new("ImageLabel",root) icon.Name="FyrelithLogo" icon.BackgroundTransparency=1 icon.Position=UDim2.fromOffset(375,0) icon.Size=UDim2.fromOffset(150,150) icon.ScaleType=Enum.ScaleType.Fit
- pcall(function() icon.Image=(getcustomasset or getsynasset)(file) game:GetService("ContentProvider"):PreloadAsync({icon}) end)
+ task.spawn(function()pcall(function() icon.Image=(getcustomasset or getsynasset)(file) game:GetService("ContentProvider"):PreloadAsync({icon}) end)end)
  local title=Instance.new("TextLabel",root) title.Name="HubTitle" title.BackgroundTransparency=1 title.Position=UDim2.fromOffset(0,150) title.Size=UDim2.fromOffset(900,48) title.Text="FYRELITH HUB" title.Font=Enum.Font.ArialBold title.TextSize=38 title.TextColor3=Color3.fromRGB(244,232,255)
  for _,entry in ipairs({{"Gems","rbxassetid://71405874061254",0},{"Gold","rbxassetid://111024034557835",310}}) do
   local img=Instance.new("ImageLabel",root) img.Name=entry[1].."GameIcon" img.BackgroundTransparency=1 img.Position=UDim2.fromOffset(entry[3],458) img.Size=UDim2.fromOffset(40,40) img.Image=entry[2]
@@ -1185,6 +1185,15 @@ end
 E.AAApplyHudBrand=brand
 brand(E.AAStatusHUD)
 
+end
+do
+ local E=getgenv()
+ if E.FyrelithOverviewRepair then E.FyrelithOverviewRepair.alive=false end
+ local old=E.AAStatusHUD
+ if old then
+  old.alive=false
+  if old.screen then pcall(function()old.screen:Destroy()end)end
+ end
 end
 -- Frameless live status; session clock survives automatic teleport execution.
 do
@@ -1244,9 +1253,18 @@ if not (E.AAStatusHUD and E.AAStatusHUD.alive) then
  local loader,core,units local nextResolve=0 local watch={} local nextWatch=0
  local function resolve()
   if os.clock()<nextResolve then return end nextResolve=os.clock()+15
-  if not loader then pcall(function() loader=require(R.src.Loader) end) end
-  if not core then pcall(function() local f=filtergc("function",{Name="refresh_current_player_level"},true) core=f and getfenv(f).LevelServiceCore end) end
-  if not units then pcall(function() local f=filtergc("function",{Constants={"buy_from_banner"}},true) units=f and getfenv(f).Units end) end
+   -- Module loading may yield indefinitely on some mobile executors.
+   -- Keep each resolver independent so the status refresh never waits on it.
+   if not loader and not state.loaderBusy then state.loaderBusy=true task.spawn(function()
+    local ok,value=pcall(function()return require(R.src.Loader)end)
+    if ok then loader=value else state.loaderError=tostring(value):sub(1,180) end state.loaderBusy=false
+   end)end
+   if not core and not state.levelBusy then state.levelBusy=true task.spawn(function()
+    pcall(function()local f=filtergc("function",{Name="refresh_current_player_level"},true) core=f and getfenv(f).LevelServiceCore end) state.levelBusy=false
+   end)end
+   if not units and not state.unitsBusy then state.unitsBusy=true task.spawn(function()
+    pcall(function()local f=filtergc("function",{Constants={"buy_from_banner"}},true) units=f and getfenv(f).Units end) state.unitsBusy=false
+   end)end
  end
  local function number(n)
   local s=tostring(math.floor(tonumber(n) or 0)) local r=s:reverse():gsub("(%d%d%d)","%1,"):reverse() return r:gsub("^,","")
@@ -4294,6 +4312,7 @@ end
 ]==========],"Unified Fyrelith surfaces; UI-only, event-driven styling."))() end)
 ]========]
 
+do
 -- Serialize runtime initialization before any WaitForChild/require can yield.
 local bootNow=os.clock()
 if E.AASmartInitializingAt and bootNow-E.AASmartInitializingAt<120 then return end
@@ -4305,6 +4324,7 @@ if bootstrapPlayer then
     bootstrapPlayer:SetAttribute("AASmartInitializingAt",bootNow)
 end
 if E.AAIncomeHelper then E.AAIncomeHelper.alive=false end
+do
 -- Check required capabilities before retiring the current controller.
 assert(type(filtergc)=="function","Executor requires filtergc; existing controller retained")
 local preflightPlayers=game:GetService("Players")
@@ -4317,8 +4337,9 @@ require(assert(preflightData:WaitForChild("Units",60),"Startup timeout: Units"))
 local preflightEndpoints=assert(preflightRoot:WaitForChild("endpoints",60),"Startup timeout: endpoints")
 local preflightClient=assert(preflightEndpoints:WaitForChild("client_to_server",60),"Startup timeout: client_to_server")
 assert(preflightClient:WaitForChild("spawn_unit",60),"Startup timeout: spawn_unit")
-local scanOK,previousStates=pcall(filtergc,"table",{Keys={"placementRoles","spawnCooldown","alive","enabled"}},false)
-assert(scanOK,"Executor filtergc failed; existing controller retained: "..tostring(previousStates))
+local scanOK,scannedStates=pcall(filtergc,"table",{Keys={"placementRoles","spawnCooldown","alive","enabled"}},false)
+assert(scanOK,"Executor filtergc failed; existing controller retained: "..tostring(scannedStates))
+end
 local startupRoles=E.AASmartPlacement and E.AASmartPlacement.placementRoles
 local startupSettings=E.AASmartPlacementRestore
 E.AASmartPlacementRestore=nil
@@ -4396,12 +4417,14 @@ local lobbyTick,combatFeatures,chooseFarm,extensionControls,extensionSync,arcOut
 if startupRoles then S.placementRoles=startupRoles end
 local pg=P:WaitForChild("PlayerGui")
 -- Executor environments can differ, so getgenv alone cannot identify old copies.
--- Previous controllers were scanned successfully during preflight.
+do
+local previousStates=filtergc("table",{Keys={"placementRoles","spawnCooldown","alive","enabled"}},false)
 for _,previous in ipairs(previousStates or {}) do
     if previous~=S and previous.alive==true and type(previous.connections)=="table" and type(previous.placementRoles)=="table" and type(previous.spawnCooldown)=="table" then
         previous.alive=false previous.enabled=false previous.generation=(previous.generation or 0)+1
         for _,connection in pairs(type(previous.connections)=="table" and previous.connections or {}) do pcall(function() connection:Disconnect() end) end
     end
+end
 end
 for _,oldGui in pg:GetChildren() do if oldGui.Name=="AASmartPlacement" and oldGui:IsA("ScreenGui") then oldGui:Destroy() end end
 local gui=Instance.new("ScreenGui",pg) gui.Name="AASmartPlacement" gui.ResetOnSpawn=false
@@ -4642,7 +4665,8 @@ function S.spawnMultipliers(uuid,owned,ss)
     if fn and ss then
         for name,key in pairs({damage="damage",range="range",cooldown="attack_cooldown"}) do
             local ok,value=pcall(fn,owned,owned.xp or 0,key,ss)
-            if ok and tonumber(value) and value>0 then result[name]=value end
+            value=ok and tonumber(value) or nil
+            if value and value==value and value>0 and value<math.huge then result[name]=value end
         end
     end
     S.spawnStatCache[uuid]={xp=owned.xp,expires=os.clock()+3,value=result}
@@ -5476,7 +5500,8 @@ local function upgradeCandidates(farmOnly)
     local choices={} local ps
     for _,u in ownUnits() do
         if S.reconcileHeroUpgrade(u) then continue end
-        local n=val(u.stats,"upgrade") local max=val(u.stats,"max_upgrade") local d=defs[val(u.stats,"id")]
+        local n=tonumber(val(u.stats,"upgrade")) local max=tonumber(val(u.stats,"max_upgrade")) local d=defs[val(u.stats,"id")]
+        if not n or n<0 or n%1~=0 or not max or max<n or max==math.huge then continue end
         local next=n and d and d.upgrade and d.upgrade[n+1]
         local cost=next and tonumber(next.cost)
         local health=tonumber(val(u.stats,"health"))
@@ -5486,7 +5511,12 @@ local function upgradeCandidates(farmOnly)
             local attack=tonumber(val(u.stats,"damage")) or d.damage or 0
             local interval=math.max(tonumber(val(u.stats,"attack_cooldown")) or d.attack_cooldown or 1,0.1)
             local radius=tonumber(val(u.stats,"range")) or d.range or 0
-            local oldStage=n>0 and d.upgrade[n] or d
+            local oldStage=d
+            if n>0 then oldStage=d.upgrade[n] end
+            if type(oldStage)~="table" then
+                S.upgradeDataError="Missing current upgrade stage for "..tostring(val(u.stats,"id")).." at "..tostring(n)
+                continue
+            end
             local attackScale=(oldStage.damage or 0)>0 and attack/oldStage.damage or 1
             local nextAttack=(next.damage or oldStage.damage or 0)*attackScale
             local intervalScale=(oldStage.attack_cooldown or 0)>0 and interval/oldStage.attack_cooldown or 1
@@ -8482,7 +8512,11 @@ track(P.OnTeleport:Connect(function(state)
     if not S.alive then return end
     if state==Enum.TeleportState.Started then
         S.saveSettings()
-        if not S.teleportRequeued then S.teleportRequeued=true S.armAutorun(true) end
+        if not S.teleportRequeued then
+            local ready,why=S.armAutorun(true)
+            S.teleportRequeued=ready==true
+            S.autorunError=not ready and tostring(why) or nil
+        end
     end
 end))
 -- KAI TUN CONTROLLER BEGIN
@@ -8658,6 +8692,7 @@ S.loadStartup=function()
     S.developmentAllowed=S.developmentAllowed==true
     if not S.developmentAllowed then S.arcAutoFeed=false S.arcAutoFuse=false S.autoFeedSelected=false S.autoFuseSelected=false S.autoBestDevelopment=false S.feedEnabled=false S.evolveEnabled=false end
     S.autoRetry=S.autoRetry==true -- Preserve saved Story/manual retry; Infinite has its own policy.
+    if UIS.TouchEnabled and not UIS.KeyboardEnabled then S.mobileMode=true end
     E.AAKaiTunPaused=S.kaiTunPaused==true
     if S.autoArcSkip and not Loader.IsLobby then
         local ld=Loader.LevelData or {}
@@ -10801,6 +10836,7 @@ task.spawn(function()
 end)
 
 
+end
 getgenv().FyrelithBoot.run("Restore Dex access after teleport; no legacy two-button dock.",function() return assert(loadstring([==========[-- Restore Dex access after teleport; no legacy two-button dock.
 do
 local E=getgenv() local pg=game.Players.LocalPlayer.PlayerGui
@@ -11639,7 +11675,13 @@ local center=assert(E.AAFyrelithCenter)
 local H=game:GetService("HttpService")
 local player=game.Players.LocalPlayer
 local pg=player.PlayerGui
-if E.FyrelithDiscordReports then E.FyrelithDiscordReports.close() end
+if E.FyrelithDiscordReports then
+ local previous=E.FyrelithDiscordReports
+ if type(previous.close)=="function" then pcall(previous.close) else
+  previous.alive=false
+  for _,connection in pairs(previous.connections or {}) do pcall(function()connection:Disconnect()end)end
+ end
+end
 local legacy=center.hookConfig
 local config={url=legacy.url,enabled=legacy.enabled}
 legacy.enabled=false -- Stop the old text-only observer without altering saved preferences.
