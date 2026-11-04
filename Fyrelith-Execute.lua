@@ -1,9 +1,90 @@
 -- Fyrelith full runtime: current UI and confirmed text-only Discord reports.
 local E=getgenv()
 local source=[========================================[
-getgenv().FyrelithBuild='2026-11-04-dex-facing-14'
+-- FYRELITH_START_CONFIG_V1: validate before replacing the running controller.
+do
+ local E=getgenv()
+ function E.FyrelithParseStartConfig(config)
+  if config==nil then return nil end
+  if type(config)~='table' or type(config.FarmMode)~='table' then
+   return nil,'FyrelithStartConfig.FarmMode must contain XP, Story and Infinite booleans'
+  end
+  local modes=config.FarmMode local count=0 local selected='Off'
+  for key in pairs(modes)do
+   if key~='XP'and key~='Story'and key~='Infinite'then return nil,'Unknown FarmMode: '..tostring(key)end
+  end
+  for _,key in ipairs({'XP','Story','Infinite'})do
+   if type(modes[key])~='boolean'then return nil,'FarmMode.'..key..' must be true or false'end
+   if modes[key]then count+=1 selected=key end
+  end
+  if count>1 then return nil,'Only one FarmMode may be true; all may be false'end
+  return {XP=modes.XP,Story=modes.Story,Infinite=modes.Infinite,selected=selected}
+ end
+ local plan,err=E.FyrelithParseStartConfig(E.FyrelithStartConfig)
+ assert(not err,err)
+ E.FyrelithStartOverride=plan
+ -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
+ if plan then E.FyrelithStartConfig=nil end
+end
+getgenv().FyrelithBuild='2026-11-04-auto-notice-16'
+-- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
+do
+ local E=getgenv()
+ if E.FyrelithAutoNotice then E.FyrelithAutoNotice.alive=false end
+ local state={alive=true,attempts=0,confirmed=0,interval=.25}
+ E.FyrelithAutoNotice=state
+ task.spawn(function()
+  local loader=require(game.ReplicatedStorage.src.Loader)
+  local service
+  local seenGui local shownAt local wasReady=false local nextAttempt=0 local awaiting=false
+  while state.alive do
+   local ok,err=pcall(function()
+    service=service or loader.load_client_service(script,'GUIService')
+    local native=service and service.disclaimer_ui
+    local gui=native and native.screenGUI
+    if not gui or not gui.Parent then service=nil return end
+    if gui~=seenGui then seenGui=gui shownAt=nil wasReady=false awaiting=false nextAttempt=0 end
+    if not gui.Enabled then
+     if awaiting then state.confirmed+=1 end
+     shownAt=nil wasReady=false awaiting=false state.status='Hidden' return
+    end
+    local now=os.clock()
+    if not shownAt or wasReady and native.can_confirm~=true then shownAt=now end
+    wasReady=native.can_confirm==true
+    if not wasReady or now-shownAt<5 then state.status='Waiting for notice cooldown' return end
+    if E.AAKaiTunPaused then state.status='Paused' return end
+    if now<nextAttempt then return end
+    local button=native.Confirm
+    if not button or not button:IsA('GuiButton')or not button.Visible or not button.Active
+      or button.AbsoluteSize.X<1 or button.AbsoluteSize.Y<1 then return end
+    local pos=button.AbsolutePosition+button.AbsoluteSize*.5
+    if not gui.IgnoreGuiInset then
+     local inset=game:GetService('GuiService'):GetGuiInset() pos+=inset
+    end
+    local control=game.Players.LocalPlayer.PlayerGui:FindFirstChild('FyrelithControlCenter')
+    local enabled=control and control.Enabled
+    local vim=game:GetService('VirtualInputManager')
+    nextAttempt=now+2 state.attempts+=1 awaiting=true state.status='Confirming notice'
+    local clicked,why=pcall(function()
+     if control then control.Enabled=false end
+     vim:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
+     task.wait(.05)
+     vim:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)
+    end)
+    if control and control.Parent then control.Enabled=enabled end
+    if not clicked then
+     pcall(function()vim:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)end)
+     error(why,0)
+    end
+   end)
+   if not ok then state.error=tostring(err):sub(1,200) state.status='Waiting for notice controls' end
+   task.wait(state.interval)
+  end
+ end)
+end
+
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-04-dex-facing-14'}
+local M={build='2026-11-04-auto-notice-16'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -771,9 +852,9 @@ function E.FyrelithResolveAbilityControls()
 end
 
 Boot.compatSource=[==============================[
--- FYRELITH_PINNED_BOOTSTRAP_V14: only this verified release may start.
+-- FYRELITH_PINNED_BOOTSTRAP_V16: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-04-dex-facing-14'
+ local E=getgenv()local expected='2026-11-04-auto-notice-16'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -8525,6 +8606,11 @@ S.loadStartup=function()
     for key,value in pairs(sharedConfigDefaults) do
         if type(settings)~='table' or settings[key]==nil then S[key]=value end
     end
+    local override=E.FyrelithStartOverride
+    if override then
+        S.autoFarmXP=override.XP S.storyAutomationEnabled=override.Story S.autoJoinInfinite=override.Infinite
+        S.startConfigApplied=override.selected
+    end
     -- Repair conflicting saved flags conservatively; a valid both-OFF state stays OFF.
     if S.autoFarmXP then S.setAutoFarmXP(true,false)
     elseif S.storyAutomationEnabled then S.setStoryAutomation(true,false)
@@ -11077,7 +11163,7 @@ btn("EditorBack","Back",538,160,function() center.openPage("home") end)
 local ok,saved=pcall(function() return H:JSONDecode(readfile(path)) end)
 if ok and type(saved)=="table" then
  local valid=true for k,v in pairs(saved) do if not allowed[k] or type(v)~="boolean" then valid=false end end
- if valid then apply(saved,false) end
+ if valid and not S.startConfigApplied and not S.settingsRestored then apply(saved,false) end
 end
 editor.Text=template() state.editor=editor
 end
@@ -12255,7 +12341,7 @@ bind(cfg.CurrentConfig,function() loadText() refresh() cfg.Status.Text='Current 
 on(cfg:GetPropertyChangedSignal('Visible'),function() refresh() if cfg.Visible and not dirty then loadText() end end)
 on(c.pause:GetPropertyChangedSignal('Text'),function() refresh() if not dirty then loadText() end end)
 local ok,saved=pcall(function() return H:JSONDecode(readfile(path)) end)
-if ok and type(saved)=='table' and not S.settingsRestored then
+if ok and type(saved)=='table' and not S.settingsRestored and not S.startConfigApplied then
  saved['Smart Placement']=nil
  if saved['Allow Development Resources']~=true then
   for _,key in ipairs({'Story Auto Feed','Story Auto Fuse','Auto Feed Selected','Auto Fuse Selected','Auto Best Development','Feed System','Evolution System'}) do saved[key]=false end
