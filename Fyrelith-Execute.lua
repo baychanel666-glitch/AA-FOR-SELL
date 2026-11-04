@@ -26,7 +26,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-04-xp-starter-17'
+getgenv().FyrelithBuild='2026-11-04-auto-update-ok-18'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -46,7 +46,20 @@ do
     if gui~=seenGui then seenGui=gui shownAt=nil wasReady=false awaiting=false nextAttempt=0 end
     if not gui.Enabled then
      if awaiting then state.confirmed+=1 end
-     shownAt=nil wasReady=false awaiting=false state.status='Hidden' return
+     shownAt=nil wasReady=false awaiting=false state.status='Hidden'
+     -- This is exactly the native UpdateUI OK handler; no purchase or navigation.
+     local update=service.update_ui
+     local updateGui=update and update.screenGUI
+     if updateGui and not updateGui.Enabled and state.updateAwaiting then
+      state.updateConfirmed=(state.updateConfirmed or 0)+1 state.updateAwaiting=false
+     end
+     if updateGui and updateGui.Enabled and not E.AAKaiTunPaused
+       and type(update.toggle)=='function' and os.clock()>=(state.nextUpdateAt or 0) then
+      state.nextUpdateAt=os.clock()+2 state.updateAwaiting=true
+      state.updateAttempts=(state.updateAttempts or 0)+1 state.status='Closing update notice'
+      task.spawn(function()local ok,why=pcall(update.toggle,update)if not ok then state.error=tostring(why):sub(1,200)end end)
+     end
+     return
     end
     local now=os.clock()
     if not shownAt or wasReady and native.can_confirm~=true then shownAt=now end
@@ -84,7 +97,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-04-xp-starter-17'}
+local M={build='2026-11-04-auto-update-ok-18'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -852,9 +865,9 @@ function E.FyrelithResolveAbilityControls()
 end
 
 Boot.compatSource=[==============================[
--- FYRELITH_PINNED_BOOTSTRAP_V17: only this verified release may start.
+-- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-04-xp-starter-17'
+ local E=getgenv()local expected='2026-11-04-auto-update-ok-18'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
