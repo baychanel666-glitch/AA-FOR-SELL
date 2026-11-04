@@ -1325,7 +1325,11 @@ local function brand(state)
  for _,v in root:GetChildren() do if v:IsA("GuiObject") then v.Position=v.Position+UDim2.fromOffset(0,200) end end
  root.Size=UDim2.fromOffset(900,710) root.AnchorPoint=Vector2.new(.5,.5) root.Position=UDim2.fromScale(.5,.5)
  local icon=Instance.new("ImageLabel",root) icon.Name="FyrelithLogo" icon.BackgroundTransparency=1 icon.Position=UDim2.fromOffset(375,0) icon.Size=UDim2.fromOffset(150,150) icon.ScaleType=Enum.ScaleType.Fit
- pcall(function() icon.Image=(getcustomasset or getsynasset)(file) game:GetService("ContentProvider"):PreloadAsync({icon}) end)
+ pcall(function() icon.Image=(getcustomasset or getsynasset)(file) end)
+ -- Asset loading must never hold the status worker before its first update.
+ task.spawn(function()
+  pcall(function() game:GetService('ContentProvider'):PreloadAsync({icon}) end)
+ end)
  local title=Instance.new("TextLabel",root) title.Name="HubTitle" title.BackgroundTransparency=1 title.Position=UDim2.fromOffset(0,150) title.Size=UDim2.fromOffset(900,48) title.Text="FYRELITH HUB" title.Font=Enum.Font.ArialBold title.TextSize=38 title.TextColor3=Color3.fromRGB(244,232,255)
  for _,entry in ipairs({{"Gems","rbxassetid://71405874061254",0},{"Gold","rbxassetid://111024034557835",310}}) do
   local img=Instance.new("ImageLabel",root) img.Name=entry[1].."GameIcon" img.BackgroundTransparency=1 img.Position=UDim2.fromOffset(entry[3],458) img.Size=UDim2.fromOffset(40,40) img.Image=entry[2]
@@ -1426,7 +1430,7 @@ if not (E.AAStatusHUD and E.AAStatusHUD.alive) then
   phase.TextColor3=phase.Text=="Paused" and Color3.fromRGB(229,190,128) or Color3.fromRGB(138,230,172)
   if os.time()-state.lastSave>=15 then state.lastSave=os.time() save() end
  end
- if E.AAApplyHudBrand then E.AAApplyHudBrand(state) end
+ if E.AAApplyHudBrand then local ok,err=pcall(E.AAApplyHudBrand,state) if not ok then state.brandError=tostring(err) end end
  while state.alive and screen.Parent do local ok,err=pcall(update) if not ok then state.lastError=tostring(err):sub(1,160) end task.wait(1) end
  end)
 end
@@ -11737,13 +11741,32 @@ local center=assert(E.AAFyrelithCenter)
 local H=game:GetService("HttpService")
 local player=game.Players.LocalPlayer
 local pg=player.PlayerGui
-if E.FyrelithDiscordReports then E.FyrelithDiscordReports.close() end
-local legacy=center.hookConfig
+local previous=E.FyrelithDiscordReports
+if type(previous)=='table' then
+ -- A prior attempt may have stopped before installing its shutdown function.
+ previous.alive=false
+ if type(previous.close)=='function' then
+  local ok,err=pcall(previous.close)
+  if not ok then previous.cleanupError=tostring(err) end
+ elseif type(previous.connections)=='table' then
+  for _,connection in pairs(previous.connections) do pcall(function() connection:Disconnect() end) end
+ end
+end
+local legacy=assert(center.hookConfig,'FYRELITH_REPORTS_NOT_READY: webhook config')
 local config={url=legacy.url,enabled=legacy.enabled}
-legacy.enabled=false -- Stop the old text-only observer without altering saved preferences.
-center.hookConfig=config
 local state={alive=true,connections={},queue={},sent={},captured={},targets={},lastSend=-math.huge,sentCount=0}
+local module,original,wrapped,saveJournal
+function state.close()
+ if state.closed then return end
+ state.closed=true state.alive=false
+ for _,connection in pairs(state.connections) do pcall(function() connection:Disconnect() end) end
+ table.clear(state.connections)
+ if module and wrapped and module.purchaseEvidence==wrapped then module.purchaseEvidence=original end
+ if saveJournal then pcall(saveJournal) end
+end
+-- Publish only a state that can already be stopped, even if initialization fails.
 E.FyrelithDiscordReports=state
+local function initialize()
 local path="AASmartPlacement/discord_reports_"..player.UserId..".json"
 local configPath="AASmartPlacement/webhook_"..player.UserId..".json"
 local function valid(url)
@@ -11756,7 +11779,7 @@ local function clip(value,limit)
  while last>0 and text:byte(last+1)>=128 and text:byte(last+1)<192 do last-=1 end
  return text:sub(1,last).."..."
 end
-local function saveJournal()
+saveJournal=function()
  pcall(function() writefile(path,H:JSONEncode({userId=player.UserId,queue=state.queue,sent=state.sent})) end)
 end
 pcall(function()
@@ -11770,8 +11793,16 @@ pcall(function()
   end
  end
 end)
-local callback=filtergc("function",{Constants={"buy_from_banner"}},true)
-local units=callback and getfenv(callback).Units or {}
+local units={}
+local found,value=pcall(function()
+ local callback=filtergc('function',{Constants={'buy_from_banner'}},true)
+ return callback and getfenv(callback).Units
+end)
+if found and type(value)=='table' then units=value
+else
+ local ok,data=pcall(function()return require(game:GetService('ReplicatedStorage').src.Data.Units)end)
+ if ok and type(data)=='table' then units=data end
+end
 local function readLabel(key)
  local root=pg:FindFirstChild("AAFramelessStatus")
  local label=root and root:FindFirstChild(key,true)
@@ -11827,9 +11858,9 @@ function state.enqueue(id,body)
  state.captured[id]=true state.queue[#state.queue+1]={id=id,body=body,attempts=0}
  saveJournal() return true
 end
-local module=assert(E.AALiveAuditModules)
-local original=module.purchaseEvidence
-local wrapped
+module=assert(E.AALiveAuditModules,'FYRELITH_REPORTS_NOT_READY: audit modules')
+original=assert(module.purchaseEvidence,'FYRELITH_REPORTS_NOT_READY: purchase evidence')
+assert(type(original)=='function','FYRELITH_REPORTS_NOT_READY: purchase evidence function')
 wrapped=function(pending,snapshot)
  if type(pending)=="table" and type(pending.id)=="string" and not state.targets[pending.id] then state.targets[pending.id]=targetsNow() end
  local decision,info=original(pending,snapshot)
@@ -11841,7 +11872,6 @@ wrapped=function(pending,snapshot)
  end
  return decision,info
 end
-module.purchaseEvidence=wrapped
 local function bind(signal,fn)
  for _,c in ipairs(getconnections(signal)) do c:Disconnect() end
  local c=signal:Connect(fn) state.connections[#state.connections+1]=c
@@ -11850,6 +11880,9 @@ local page=center.window.WebhookPage
 local input=page:FindFirstChild("WebhookURL",true)
 local toggle=page:FindFirstChild("Toggle",true)
 local save=page:FindFirstChild("Save",true)
+assert(input and input:IsA('TextBox') and toggle and toggle:IsA('GuiButton') and save and save:IsA('GuiButton'),
+ 'FYRELITH_REPORTS_NOT_READY: webhook controls')
+module.purchaseEvidence=wrapped
 local function saveConfig()
  if config.url~="" and not valid(config.url) then center.hookStatus.Text="Enter a valid Discord webhook URL" return false end
  local ok=pcall(function() writefile(configPath,H:JSONEncode({userId=player.UserId,url=config.url,enabled=config.enabled})) end)
@@ -11907,13 +11940,19 @@ task.spawn(function()
   end
  end
 end)
-function state.close()
- state.alive=false
- for _,c in state.connections do c:Disconnect() end
- if module.purchaseEvidence==wrapped then module.purchaseEvidence=original end
- saveJournal()
-end
+-- Commit config ownership only after all required controls and hooks are ready.
+legacy.enabled=false
+center.hookConfig=config
 state.installed=true
+end
+local ok,failure=xpcall(initialize,function(err)
+ return debug and type(debug.traceback)=='function' and debug.traceback(tostring(err),2) or tostring(err)
+end)
+if not ok then
+ state.lastError=tostring(failure)
+ state.close()
+ error('FYRELITH_REPORTS_INIT_FAILED: '..tostring(failure),0)
+end
 ]==========],"FYRELITH_DISCORD_REPORTS_V1: confirmed, text-only Discord embeds."))() end)
 
 getgenv().FyrelithBoot.run("FYRELITH_WEBHOOK_CLEANUP_V1",function() return assert(loadstring([======================[
