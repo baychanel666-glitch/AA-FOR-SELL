@@ -26,7 +26,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-05-stop-fix-19'
+getgenv().FyrelithBuild='2026-11-05-stop-fix-20'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -98,7 +98,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-05-stop-fix-19'}
+local M={build='2026-11-05-stop-fix-20'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -868,7 +868,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-05-stop-fix-19'
+ local E=getgenv()local expected='2026-11-05-stop-fix-20'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -6301,14 +6301,17 @@ function S.farmPhase(v)
     return "NORMAL"
 end
 chooseFarm=function(combat,cash,reserveCash)
-    if not S.farmEnabled then S.farmState={phase="OFF"} return nil,"NORMAL" end
+    if not S.farmEnabled then S.farmState={phase="OFF",count=0,target=0,pendingUpgrade=false,upgraded=false} return nil,"NORMAL" end
     local profile=S.collectionProfile()
-    if not profile then return nil,"NORMAL" end
+    if not profile then
+        S.farmState={phase="WAIT PROFILE",count=0,target=0,pendingUpgrade=false,upgraded=false}
+        error("FYRELITH_NOT_READY: farm collection profile")
+    end
     local owned=ownUnits() local inventory={} local options={} local seen={} local capacity=0 local count=0 local upgraded=false
     local selectedFarm=S.selectEquippedFarm(profile)
     local pendingFarm=selectedFarm and E.FyrelithPlacementLeases and E.FyrelithPlacementLeases.entries[selectedFarm.uuid]
     if pendingFarm and pendingFarm.quarantined then
-        S.farmState={phase="REVIEW PLACEMENT",id=selectedFarm.id,reason=S.placementWarning}
+        S.farmState={phase="REVIEW PLACEMENT",id=selectedFarm.id,reason=S.placementWarning,count=0,target=0,pendingUpgrade=false,upgraded=false}
         return nil,"OFF"
     end
     S.activeFarmMode=S.farmSelectionMode() S.activeFarmId=selectedFarm and selectedFarm.id or nil
@@ -6338,7 +6341,7 @@ chooseFarm=function(combat,cash,reserveCash)
         elseif os.clock()-(pending.at or os.clock())>=30 then
             S.spawnCooldown[pending.uuid]=math.huge S.farmPending=nil
             S.setPlacementWarning("Farm placement unresolved; this unit is held for review without repeating its purchase")
-            S.farmState={phase="REVIEW PLACEMENT",id=pending.id}
+            S.farmState={phase="REVIEW PLACEMENT",id=pending.id,count=0,target=0,pendingUpgrade=false,upgraded=false}
             return nil,"OFF"
         else
             S.farmRecovery={phase="CONFIRMATION",id=pending.id,reason="Resource charged; waiting for actual unit"}
@@ -9606,6 +9609,9 @@ local function step()
     S.fastFarmOpening=false
     local units,selected,ps,leaks,effectiveReserve,incoming,needsAir,airSaving={},nil,{}, {},S.reserve,nil,false,0
     farm,phase=chooseFarm(nil,cash,0)
+    if S.farmState and S.farmState.phase=="REVIEW PLACEMENT" then
+        status.Text="Farm placement needs review | no repeat purchase; other combat may continue"
+    end
     S.fastFarmOpening=S.farmEnabled and S.farmState and S.farmState.count<S.farmState.target
         and farm~=nil and cash>=farm.cost
         and os.clock()>=(S.farmRetryAt or 0)
@@ -11524,13 +11530,20 @@ local hand2=panel("Hand2",7,8,5,1,face) hand2.BackgroundColor3=Color3.fromRGB(22
 place(w.RuntimeCard.Runtime,16,77,188,42) w.RuntimeCard.Runtime.Font=Enum.Font.GothamBold w.RuntimeCard.Runtime.TextSize=32
 place(w.RuntimeCard.RuntimeHint,16,126,184,22)
 local right=w.KaiTun
-place(right.CurrentAction,66,41,384,35) right.CurrentAction.TextSize=24 right.CurrentAction.Font=Enum.Font.GothamBold
+place(right.CurrentAction,66,41,384,95) right.CurrentAction.TextSize=16 right.CurrentAction.TextWrapped=true right.CurrentAction.TextYAlignment=Enum.TextYAlignment.Top right.CurrentAction.Font=Enum.Font.GothamBold
 local detail=text(right,"ActionDetail","",66,79,384,36,13)
 local icon=panel("ActionIcon",18,42,32,32,right) round(icon,16) edge(icon)
 text(icon,"Glyph","⊙",4,1,26,30,25)
 local source=game.Players.LocalPlayer.PlayerGui.AAFramelessStatus:FindFirstChild("CurrentAction",true)
 local function update()
- local raw=source.Text local headline,rest=raw:match("^([^|]+)|%s*(.*)$")
+ local raw=source.Text
+ local S=E.AASmartPlacement or {}
+ local fault=S.currentError and S.currentError.message
+ if S.kaiTunPaused and fault then raw="PAUSED: "..fault end
+ local headline,rest
+ if S.kaiTunPaused and fault then headline=raw else headline,rest=raw:match("^([^|]+)|%s*(.*)$") end
+ place(right.CurrentAction,66,41,384,S.kaiTunPaused and fault and 78 or 35)
+ detail.Visible=not (S.kaiTunPaused and fault)
  local wanted=(headline or raw):upper() if right.CurrentAction.Text~=wanted then right.CurrentAction.Text=wanted end detail.Text=rest or ""
 end
 c.connections[#c.connections+1]=right.CurrentAction:GetPropertyChangedSignal("Text"):Connect(update)
