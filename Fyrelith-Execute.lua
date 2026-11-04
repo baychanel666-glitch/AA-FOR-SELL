@@ -26,7 +26,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-04-auto-notice-16'
+getgenv().FyrelithBuild='2026-11-04-xp-starter-17'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -84,7 +84,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-04-auto-notice-16'}
+local M={build='2026-11-04-xp-starter-17'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -852,9 +852,9 @@ function E.FyrelithResolveAbilityControls()
 end
 
 Boot.compatSource=[==============================[
--- FYRELITH_PINNED_BOOTSTRAP_V16: only this verified release may start.
+-- FYRELITH_PINNED_BOOTSTRAP_V17: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-04-auto-notice-16'
+ local E=getgenv()local expected='2026-11-04-xp-starter-17'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -10539,7 +10539,7 @@ do
             S.starterSummonStatus="Waiting for loaded Story progress before starter eligibility check" return
         end
         local qualified=S.starterSummonEligible(profile,true,{done=false,active=false},ss.profile_data.level_data)
-        if S.autoFarmXP then qualified=next(profile.owned_units)==nil and qualified end
+        -- XP uses the same new-player eligibility: empty inventory OR one starter Rare, no Story clears.
         if qualified then emptySamples+=1 else emptySamples=0 end
         local settled=emptySamples>=3 and os.clock()-startedAt>=5
         local eligible=S.starterSummonEligible(profile,settled,state,ss.profile_data.level_data)
@@ -10648,6 +10648,22 @@ do
     task.spawn(function()
         while S.alive and not state.done do
             if E.AAKaiTunPaused then task.wait(0.2) continue end
+            -- Recover new accounts that an older XP build sent into Act 1 before starter summons.
+            if S.autoFarmXP and not Loader.IsLobby and state.phase=="IDLE" and not state.done then
+                pcall(function()
+                    if not game:IsLoaded() or os.clock()-startedAt<5 then return end
+                    local ss=session() local profile=ss and ss.collection and ss.collection.collection_profile_data
+                    local levels=ss and ss.profile_data and ss.profile_data.level_data
+                    if not levels or type(levels.completed_story_levels)~="table" then return end
+                    if not S.starterSummonEligible(profile,true,state,levels) then return end
+                    if S.xpStarterReturnJob==game.JobId then return end
+                    if E.AASummonPurchaseOwner then return end
+                    S.xpStarterReturnJob=game.JobId
+                    S.starterSummonStatus="XP Farm: returning for initial starter summons before Act 1"
+                    S.starterSummonBlocking=true
+                    invoke("teleport_back_to_lobby")
+                end)
+            end
             pcall(S.observeStarterMap)
             if not Loader.IsLobby and state.phase=="IDLE" and not state.done and S.autoArcSkip then
                 pcall(function()
@@ -12108,7 +12124,7 @@ local uiGroups={
  {'REWARDS',{'Auto Round Rewards','autoRewards'},{'Daily Rewards','autoDaily'},{'Lobby Rewards','lobbyRewards'},{'Battle Pass Rewards','battlePassRewards'},{'Level Rewards','levelRewards'},{'Redeem Codes','autoRedeem'}}
 }
 local labels={['Auto Farm XP']='Auto Farm XP',['Hide Unit & Enemy Animations']='Hide unit & enemy animations',['Infinite End Return Lobby']='Return to lobby',['Infinite End Let Base Fall']='Let base fall',['Auto Join Infinite']='Auto Join Infinite',['Auto Best Development']='Auto feed/Fuse best unit',['Paused']='Pause automation',['Auto Best Team']='Equip best team',['Smart Upgrades']='Upgrade all units',['Farm Units']='Build income units',['Air Defense']='Defend against air',['Auto Start']='Start stages',['Auto Next']='Next stage on win',['Auto World Skip / Story Quest']='Auto World Skip / Story Quest',['Auto Infinite']='Enter Infinite',['Infinite Retry']='Retry Infinite',['Auto Skip Waves']='Skip waves',['Wave Skip Limit']='Limit wave skipping',['Stop Skip At Wave']='Stop skipping at',['Infinite End Wave']='End Infinite early',['End Infinite At Wave']='Finish after wave',['Auto Round Rewards']='Claim round rewards',['Daily Rewards']='Daily login rewards',['Lobby Rewards']='Claim lobby rewards',['Battle Pass Rewards']='Battle Pass rewards',['Level Rewards']='Player level rewards',['Redeem Codes']='Redeem game codes'}
-local help={['Auto Farm XP']='Retry first world Story Act 1 for XP. Empty new accounts finish the usual starter Gems summons first.',['Hide Unit & Enemy Animations']='Hide unit poses and enemy walk animations; keep movement and combat active.',['Infinite End Return Lobby']='After clearing the target wave, return to lobby.',['Infinite End Let Base Fall']='Sell sellable units, stop combat and wait for defeat. No early teleport.',['Disable 3D']='Darken the game with a 90% black overlay; game rendering stays enabled.',['Auto Join Infinite']='Join an unlocked Infinite directly. Turns Story mode OFF.',['Auto Best Development']='Use EXP items and allowed Fuse donors on the best attacker.',['Paused']='ON pauses all automation.',['Auto Best Team']='Rebuild team safely in lobby.',['Smart Upgrades']='Upgrade attackers and income units.',['Farm Units']='Place and upgrade income units.',['Air Defense']='Keep coverage against flyers.',['Auto Start']='Vote to begin a joined stage.',['Auto Next']='Continue after a victory.',['Auto World Skip / Story Quest']='World Skip first; Acts 1-6 on failure; Infinite if an Act fails.',['Auto Infinite']='Join the configured Infinite map.',['Infinite Retry']='Retry Infinite when Summon allows.',['Auto Skip Waves']='Vote to skip when permitted.',['Wave Skip Limit']='Stop skipping at the number below.',['Stop Skip At Wave']='Positive whole wave number.',['Infinite End Wave']='Choose how to end after clearing the target wave.',['End Infinite At Wave']='Positive whole wave number.',['Auto Round Rewards']='Collect rewards after a round.',['Daily Rewards']='Claim daily check-in rewards.',['Lobby Rewards']='Claim available lobby rewards.',['Battle Pass Rewards']='Claim available unlocked tiers.',['Level Rewards']='Claim rewards for player levels.',['Redeem Codes']='Try supported unclaimed codes.'}
+local help={['Auto Farm XP']='Retry first world Story Act 1 for XP. New accounts with no units or one starter Rare finish the usual Gems summons first.',['Hide Unit & Enemy Animations']='Hide unit poses and enemy walk animations; keep movement and combat active.',['Infinite End Return Lobby']='After clearing the target wave, return to lobby.',['Infinite End Let Base Fall']='Sell sellable units, stop combat and wait for defeat. No early teleport.',['Disable 3D']='Darken the game with a 90% black overlay; game rendering stays enabled.',['Auto Join Infinite']='Join an unlocked Infinite directly. Turns Story mode OFF.',['Auto Best Development']='Use EXP items and allowed Fuse donors on the best attacker.',['Paused']='ON pauses all automation.',['Auto Best Team']='Rebuild team safely in lobby.',['Smart Upgrades']='Upgrade attackers and income units.',['Farm Units']='Place and upgrade income units.',['Air Defense']='Keep coverage against flyers.',['Auto Start']='Vote to begin a joined stage.',['Auto Next']='Continue after a victory.',['Auto World Skip / Story Quest']='World Skip first; Acts 1-6 on failure; Infinite if an Act fails.',['Auto Infinite']='Join the configured Infinite map.',['Infinite Retry']='Retry Infinite when Summon allows.',['Auto Skip Waves']='Vote to skip when permitted.',['Wave Skip Limit']='Stop skipping at the number below.',['Stop Skip At Wave']='Positive whole wave number.',['Infinite End Wave']='Choose how to end after clearing the target wave.',['End Infinite At Wave']='Positive whole wave number.',['Auto Round Rewards']='Collect rewards after a round.',['Daily Rewards']='Claim daily check-in rewards.',['Lobby Rewards']='Claim available lobby rewards.',['Battle Pass Rewards']='Claim available unlocked tiers.',['Level Rewards']='Claim rewards for player levels.',['Redeem Codes']='Try supported unclaimed codes.'}
 local visible={}
 for _,g in ipairs(uiGroups) do for i=2,#g do visible[g[i][1]]=true end end
 local numeric={['Stop Skip At Wave']=true,['End Infinite At Wave']=true}
