@@ -26,7 +26,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-05-audit-fix-25'
+getgenv().FyrelithBuild='2026-11-05-xp-front-spam-29'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -98,7 +98,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-05-audit-fix-25'}
+local M={build='2026-11-05-xp-front-spam-29'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -109,18 +109,27 @@ function M.batch(cost,balance,budget,remaining,free)
  return 0,balance<cost and 'Insufficient currency'or 'Spending or pull limit reached'
 end
 function M.poolEligible(def,unit,id,featured,pools)
+ -- A nonzero chance in the background pool never authorizes this target watch.
  if not def or not def.active or not unit or unit.evolved or unit._temporary then return false end
- for _,v in ipairs(featured or{})do if v==id then return true end end
- local rate=0
- for _,row in pairs(def.rarity_rates or{})do if row.rarity==unit.rarity then rate=tonumber(row.chance)or 0 end end
- if unit.rarity=='Secret'then rate=tonumber(def._show_secret_unit_chance)or 0 end
- if rate<=0 then return false end
- local share=0
- for _,slot in pairs(def.rateup_units or{})do if slot.rarity==unit.rarity then share+=tonumber(slot.rateup_chance)or 0 end end
- if share>=1-1e-9 then return false end
- for _,v in pairs(pools and pools[unit.rarity]or{})do if v==id then return true end end
+ for _,v in pairs(featured or {})do if v==id then return true end end
  return false
 end
+function M.featuredTarget(targets,live)
+ if type(targets)~='table' or type(live)~='table' or type(live.rateup_units)~='table' then return nil end
+ local found={}
+ for _,id in pairs(live.rateup_units)do
+  if type(id)~='string' or id=='' then return nil end
+  if targets[id]==true then found[#found+1]=id end
+ end
+ table.sort(found) return found[1]
+end
+function M.roundRecoveryAllowed(runtimeFault,userPaused,finished)
+ return runtimeFault==true and userPaused==true and finished==true
+end
+function M.roundRecoveryRemote(name)
+ return name=='set_game_finished_vote' or name=='teleport_back_to_lobby'
+end
+
 function M.placementDecision(p,now,hasNewUnit,rejected)
  if hasNewUnit then return 'CONFIRMED'end
  if rejected then return 'REJECTED'end
@@ -176,6 +185,29 @@ getgenv().FyrelithSpawnGuardPolicy=function(rows,eligible)
  return ground,air
 end
 -- FYRELITH_FARM_MODE_V1
+getgenv().FyrelithXPCombatPolicy=assert(loadstring([=================[local P={}
+function P.active(xp,lobby,infinite)return xp==true and lobby~=true and infinite~=true end
+function P.placement(rows)
+ local out={}
+ for _,r in ipairs(rows or {})do out[#out+1]=r end
+ table.sort(out,function(a,b)
+  if a.cost~=b.cost then return a.cost<b.cost end
+  if (a.count or 0)~=(b.count or 0)then return (a.count or 0)<(b.count or 0)end
+  return tostring(a.uuid)<tostring(b.uuid)
+ end)
+ return out
+end
+function P.upgrade(rows,budget,now,turns)
+ local best
+ for _,r in ipairs(rows or {})do
+  if r.role=='FRONT' and r.cost<=budget and now>=(r.readyAt or 0) then
+   local used=turns[r.unit]or 0 local before=best and (turns[best.unit]or 0)or 0
+   if not best or used<before or used==before and (r.cost<best.cost or r.cost==best.cost and tostring(r.unit)<tostring(best.unit))then best=r end
+  end
+ end
+ return best
+end
+return P]=================],'XP combat policy'))()
 getgenv().FyrelithFarmPolicy=(function()
 local Policy={}
 function Policy.mode(v)
@@ -877,7 +909,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-05-audit-fix-25'
+ local E=getgenv()local expected='2026-11-05-xp-front-spam-29'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -2035,9 +2067,34 @@ E.AAConnectionGuard=E.AALiveAuditModules.connectionGuard({clock=os.clock,
     readCode=E.AALiveAuditModules.connectionReader({getIdentity=getthreadidentity or getidentity,
         setIdentity=setthreadidentity or setidentity,
         readNative=function() return game:GetService("GuiService"):GetErrorCode().Value end})})
+function E.FyrelithLiveFeaturedTarget(banner)
+ local L=require(game.ReplicatedStorage.src.Loader)
+ if not L.IsLobby then return nil end
+ local native=L.load_client_service(script,'SummonServiceClient')
+ local live=native and native.BANNER_UNITS and native.BANNER_UNITS[banner]
+ local dex=E.AASummonDex local targets=dex and dex.alive and dex.targets
+ if type(targets)~='table' or not next(targets) then
+  local ok,watch=pcall(E.AAReadSummonWatch)
+  if not ok or type(watch)~='table' then return nil end
+  targets=watch.targets or (watch.target and {[watch.target]=true})
+ end
+ return E.FyrelithReliability.featuredTarget(targets,live)
+end
 E.AAInvokeConnected=function(...)
-    assert(not E.AAKaiTunPaused,"KAI_TUN_PAUSED: no request sent")
-    return E.AAConnectionGuard.invoke(...)
+ local remote,banner=...
+ local name=remote and remote.Name
+ if E.AAKaiTunPaused then
+  local S=E.AASmartPlacement local data=workspace:FindFirstChild('_DATA')
+  local finished=data and data:FindFirstChild('GameFinished')
+  local recover=S and S.roundRecoveryActive and E.FyrelithReliability.roundRecoveryAllowed(
+   S.runtimeFaultPaused,S.kaiTunPaused,finished and finished.Value)
+  assert(recover and E.FyrelithReliability.roundRecoveryRemote(name),'KAI_TUN_PAUSED: no request sent')
+ end
+ if name=='buy_from_banner' then
+  local ok,target=pcall(E.FyrelithLiveFeaturedTarget,banner)
+  if not ok or not target then error('FYRELITH_FEATURED_NOT_READY: chosen target is not on the live banner; no request sent',0)end
+ end
+ return E.AAConnectionGuard.invoke(...)
 end
 end
 -- BEGIN EMBEDDED STORY MAPS
@@ -2159,7 +2216,7 @@ if E.AASummonDex and E.AASummonDex.alive then
     local design=E.AADexDesign local refs=design and design.refs
     local pg=game.Players.LocalPlayer:FindFirstChild('PlayerGui')
     local ready=refs and refs.grid and refs.start and refs.grid.Parent and refs.start.Parent and pg and refs.grid:IsDescendantOf(pg)
-    if E.AASummonDex.featuredOnlyVersion==47 and E.AASummonDex.modelPreviewRevision==9 and ready then E.AASummonDex.show() return end
+    if E.AASummonDex.featuredOnlyVersion==48 and E.AASummonDex.modelPreviewRevision==9 and ready then E.AASummonDex.show() return end
     assert(not E.AASummonDex.pendingPurchase and not E.AASummonPurchaseOwner,'Waiting for purchase confirmation before rebuilding Summon UI')
     local savedWatch
     pcall(function() savedWatch=readfile(getgenv().AAAccountWatchStore.path) end)
@@ -2207,7 +2264,7 @@ assert(session and session.player==P,"Player collection not ready")
 local S={alive=true,running=false,banner=nil,target=nil,budget=0,maxPulls=0,pulls=0,spent=0,
     generation=0,connections={},cards={},renderToken={continue=true},page=1,pageSize=(UIS.TouchEnabled and not UIS.KeyboardEnabled) and 6 or 12}
 S.targets={}
-S.featuredOnlyVersion=47
+S.featuredOnlyVersion=48
 S.modelPreviewRevision=9
 E.AASummonDex=S
 local screen=Instance.new("ScreenGui",P:WaitForChild("PlayerGui"))
@@ -2310,6 +2367,7 @@ local function pool(id)
     return out
 end
 local function bannerEligible(target,id,liveOverride,poolsOverride)
+    if not liveOverride and cachedBanners then return false end
     local definition=banners[id]
     local live=liveOverride or service.BANNER_UNITS[id]
     local key=id=="Legacy" and "LEGACY_UNITS_BY_RARITY" or "RATEUP_UNITS_BY_RARITY"
@@ -2970,7 +3028,19 @@ function S.start()
                 setState(S.untilGemsEmpty and "SUMMONING - until Gems insufficient" or "SUMMONING - "..S.pulls.." / "..S.maxPulls,true)
                 S.status.Text="Summoning "..batch.."x: "..S.target.." from "..bannerName(S.banner)
                 E.AASummonNextRequestAt=os.clock()+8
-                getgenv().AAInvokeConnected(R.endpoints.client_to_server.buy_from_banner,S.banner,batch==10 and "gems10" or "gems")
+                local dispatched,reply=pcall(getgenv().AAInvokeConnected,R.endpoints.client_to_server.buy_from_banner,S.banner,batch==10 and "gems10" or "gems")
+                if not dispatched then
+                    if tostring(reply):find('FYRELITH_FEATURED_NOT_READY:',1,true)==1 then
+                        local reserved=S.pendingPurchase S.pendingPurchase=nil
+                        local saved,why=pcall(saveWatch,true)
+                        if not saved then S.pendingPurchase=reserved error(why,0)end
+                        if E.AASummonPurchaseOwner==requestId then E.AASummonPurchaseOwner=nil end
+                        if E.FyrelithHatchReceipts then E.FyrelithHatchReceipts.retire(requestId)end
+                        S.status.Text='Selected target left the live banner; waiting without spending'
+                        task.wait(1) continue
+                    end
+                    error(reply,0)
+                end
                 local received=false local receivedCount=0 local deadline=os.clock()+20
                 repeat
                     if not S.alive or S.generation~=generation then return end
@@ -4456,7 +4526,7 @@ S.stackEnabled=false
 S.airDefense=true
 S.mobileMode=UIS.TouchEnabled and not UIS.KeyboardEnabled
 S.performance=perf
-local lobbyTick,combatFeatures,chooseFarm,extensionControls,extensionSync,arcOutcome
+local lobbyTick,combatFeatures,chooseFarm,extensionControls,extensionSync,arcOutcome,invoke
 if startupRoles then S.placementRoles=startupRoles end
 local pg=P:WaitForChild("PlayerGui")
 -- Executor environments can differ, so getgenv alone cannot identify old copies.
@@ -5702,7 +5772,11 @@ local function upgrade(budget,generation,focus)
         choices=filtered
     end
     local c,priority
-    if focus=="FINAL" then
+    if focus=="XP" then
+        S.xpUpgradeTurns=S.xpUpgradeTurns or setmetatable({},{__mode="k"})
+        c=E.FyrelithXPCombatPolicy.upgrade(choices,budget,os.clock(),S.xpUpgradeTurns)
+        priority="XP FRONT ROTATION"
+    elseif focus=="FINAL" then
         local support
         for _,candidate in choices do if candidate.unit==S.finalSupportTarget then support=candidate break end end
         if support and support.cost<=budget and os.clock()>=(support.readyAt or 0) then c=support
@@ -5803,6 +5877,9 @@ local function upgrade(budget,generation,focus)
     S.upgradePending[c.unit]=pending -- Reserve before yielding to a remote call.
     local sent,sendError=pcall(function() return getgenv().AAInvokeConnected(upgradeRemote,c.unit) end)
     pending.requestMs=(os.clock()-requestStarted)*1000
+    if focus=="XP" and sent and sendError~=false then
+        S.xpUpgradeTurns[c.unit]=(S.xpUpgradeTurns[c.unit]or 0)+1
+    end
     if sent and sendError==false then
         S.upgradePending[c.unit]=nil S.upgradeCooldown[c.unit]=os.clock()+0.75
         pending.error="Upgrade explicitly rejected" return false
@@ -5938,7 +6015,14 @@ local function visible(object)
 end
 local clickTimes=setmetatable({},{__mode="k"})
 local function click(object)
-    if E.AAKaiTunPaused then return false end
+    if E.AAKaiTunPaused then
+        local data=workspace:FindFirstChild('_DATA')
+        local allowed=S.roundRecoveryActive and E.FyrelithReliability.roundRecoveryAllowed(
+            S.runtimeFaultPaused,S.kaiTunPaused,val(data,'GameFinished'))
+        local results=pg:FindFirstChild('ResultsUI') local info=pg:FindFirstChild('UnitInfo')
+        local inResult=object and ((results and object:IsDescendantOf(results))or(info and object:IsDescendantOf(info)))
+        if not allowed or not inResult then return false end
+    end
     if not object or not object:IsA("GuiButton") or not visible(object) then return false end
     if os.clock()-(clickTimes[object] or -math.huge)<8 then return false end
     assert(type(firesignal)=="function" and type(getconnections)=="function","Auto round requires firesignal/getconnections")
@@ -5960,7 +6044,9 @@ local function rewardTick()
     local holder=info and (info:FindFirstChild("holder") or info:FindFirstChildWhichIsA("GuiObject"))
     local info1=holder and (holder:FindFirstChild("info1") or holder)
     local skip=info and info:FindFirstChild("SkipLabel",true)
-    local nativeRenderer=Loader.load_client_service(script,"GUIService").summon_ui
+    local service=Loader.load_client_service(script,"GUIService")
+    if not service then error('FYRELITH_NOT_READY: reward GUI service',0)end
+    local nativeRenderer=service.summon_ui
     local rewardOpen=info and info.Enabled and nativeRenderer and nativeRenderer.hatching==true
         and val(workspace:FindFirstChild("_DATA"),"GameFinished")==true
     if rewardOpen and ((skip and visible(skip)) or (holder and visible(holder))) then
@@ -6048,7 +6134,9 @@ end
 function S.resultVictory()
     local data=workspace:FindFirstChild("_DATA")
     if val(data,"GameFinished")~=true then return nil end
-    local native=Loader.load_client_service(script,"GUIService").results_ui
+    local service=Loader.load_client_service(script,"GUIService")
+    if not service then error('FYRELITH_NOT_READY: result GUI service',0)end
+    local native=service.results_ui
     if native and native.settings and type(native.settings.victory)=="boolean" then return native.settings.victory end
     local results=pg:FindFirstChild("ResultsUI")
     local holder=results and results:FindFirstChild("Holder")
@@ -6064,7 +6152,12 @@ local function roundTick()
     local finished=val(data,"GameFinished")==true
     if finished and S.observeArcResult then S.observeArcResult() end
     -- Give the independent summon watcher priority over Next/Retry on a completed act.
-    if finished and (S.summonCheckDue or S.summonResultDue()) and S.hasSummonTargets()~=false then return true end
+    if finished and (S.summonCheckDue or S.summonResultDue()) and S.hasSummonTargets()~=false then
+        if S.roundRecoveryActive and S.summonResultRecovery then
+            return S.summonResultRecovery()
+        end
+        return true
+    end
     if not finished then
         S.resultSent=false S.infiniteResultReadyAt=nil S.xpRetryReadyAt=nil
         if S.autoStart and val(data,"GameStarted")~=true then
@@ -6137,6 +6230,23 @@ local function roundTick()
     return true
 end
 S.resultAction=resultAction
+-- Keep completed rounds moving after a combat fault without unpausing purchases/combat.
+task.spawn(function()
+    while S.alive do
+        local data=workspace:FindFirstChild('_DATA')
+        if not Loader.IsLobby and not S.roundRecoveryBusy and not S.configApplying
+            and E.FyrelithReliability.roundRecoveryAllowed(S.runtimeFaultPaused,S.kaiTunPaused,val(data,'GameFinished')) then
+            S.roundRecoveryBusy=true S.roundRecoveryActive=true
+            local ok,why=xpcall(roundTick,function(err)
+                return debug and debug.traceback and debug.traceback(tostring(err),2)or tostring(err)
+            end)
+            S.roundRecoveryActive=false S.roundRecoveryBusy=false
+            S.roundRecoveryError=not ok and tostring(why)or nil
+            if not ok then status.Text='Round recovery waiting | '..tostring(why):sub(1,160)end
+        end
+        task.wait(1)
+    end
+end)
 function S.selfTest()
     local values={_dmg_amp_fire_damage=0.5}
     local stats={FindFirstChild=function(_,key) local v=values[key] return v~=nil and {Value=v} or nil end,
@@ -6214,7 +6324,7 @@ function S.lobbyNavigationGate()
     S.navigationBlockReason=reason
     return reason
 end
-local function invoke(name,...)
+invoke=function(name,...)
     if (name=='feed_units' or name=='level_up_feed' or name=='evolve_unit') and (S.configApplying or S.developmentAllowed~=true) then
         S.autoDevelopmentStatus='Development resource permission is OFF'
         return false,S.autoDevelopmentStatus
@@ -8079,16 +8189,12 @@ function S.autoBestTeamEligible(profile)
     return false
 end
 function S.autoBestUnlockTick()
-    if S.developmentBusy then return end
-    if S.configApplying or S.developmentAllowed~=true then return end
-    if not S.instanceGuard or S.autoBestThresholdHandled then return end
-    local ss=session()
-    local profile=ss and ss.collection.collection_profile_data
-    if not S.autoBestTeamEligible(profile) then return end
-    S.setAutoBestDevelopment(true,true)
-    if S.syncControls then S.syncControls() end
+    -- Unit rarity, team changes and map arrival never authorize resource spending.
+    -- Keep this callback for compatibility with the independent worker.
+    return
 end
 function S.setAutoBestDevelopment(on,automatic)
+    if on and automatic==true then return false,"Automatic development activation is disabled; enable the mode explicitly" end
     assert(not on or S.developmentAllowed==true,"Development resource permission is OFF")
     if on then
         local best=S.bestDevelopmentTarget() assert(best,"No non-farm attacker available")
@@ -8701,7 +8807,7 @@ local sharedConfigDefaults={
     autoTeam=true,
     autorun=true,
     battlePassRewards=true,
-    developmentAllowed=true,
+    developmentAllowed=false,
     disable3D=true,
     disableUnitAnimations=true,
     dynamicReserve=true,
@@ -9182,6 +9288,8 @@ local function finalWaveTick(generation)
     if not S.finalWaveSell or not last or last.Value~=true then return false end
     S.fastFarmOpening=false S.mode="FINAL WAVE"
     local ps=paths() local enemies={}
+    if #ps==0 then status.Text="Final wave: waiting for loaded enemy routes" return true end
+    S.finalWaveRoutePending=false
     local folder=workspace:FindFirstChild("_UNITS")
     if folder then for _,model in folder:GetChildren() do
         local st=model:FindFirstChild("_stats") local base=val(st,"base")
@@ -9192,9 +9300,15 @@ local function finalWaveTick(generation)
                 local at,distance=project(pos,path)
                 if not dist or distance<dist then nearest=path progress=at dist=distance end
             end end
-            enemies[#enemies+1]={p=pos,path=nearest,progress=progress,unit=model}
+            if nearest and type(progress)=="number" and nearest.length>0 then
+                enemies[#enemies+1]={p=pos,path=nearest,progress=progress,unit=model}
+            else S.finalWaveRoutePending=true end
         end
     end end
+    if S.finalWaveRoutePending then
+        status.Text="Final wave: waiting for matching enemy lane; keeping defenders in place"
+        return true
+    end
     S.finalRetired=setmetatable({},{__mode="k"})
     for _,u in ownUnits() do
         if not S.isAutoSellProtectedId(val(u.stats,"id")) and not isFarm(u)
@@ -9476,6 +9590,12 @@ local function summonWatchTick()
     S.summonWatchStatus=(Loader.LevelData or {}).infinite and "Auto Summon ON: hourly :01 EST return + check after match rewards" or S.hourlySummonStatus or "Auto Summon ON: lobby checks every hour at :01 EST"
     return false
 end
+function S.summonResultRecovery()
+    -- This adapter is callable during a combat-fault Pause, never in the lobby.
+    -- It only settles reward/result navigation; the purchase dispatcher remains paused.
+    if Loader.IsLobby or val(workspace:FindFirstChild('_DATA'),'GameFinished')~=true then return true end
+    return summonWatchTick()
+end
 function S.shouldReturnInfinite(wave,infinite,finished,enabled,target)
     return enabled==true and infinite==true and finished~=true and target>=1 and wave>target
 end
@@ -9662,8 +9782,62 @@ function S.pendingPlacementStatus()
     end
     return out
 end
+function S.xpCombatTick(cash,generation)
+    local policy=E.FyrelithXPCombatPolicy
+    if not policy.active(S.autoFarmXP,Loader.IsLobby,(Loader.LevelData or {}).infinite)then return false end
+    S.mode="XP FRONT SPAM" S.fastFarmOpening=false
+    local ready=readyToPlace(team(),cash,0,os.clock(),S.spawnCooldown)
+    local direct={}
+    for _,row in ipairs(ready)do
+        if S.isDirectCombatId(row.id) and not E.FyrelithPlacementLeases.entries[row.uuid]then direct[#direct+1]=row end
+    end
+    local candidates=policy.placement(direct)
+    if S.xpNextAction=="UPGRADE" and upgrade(cash,generation,"XP")then S.xpNextAction="PLACE" return true end
+    local routes=paths()
+    S.preferBestFront=true S.spawnFrontPlacement=true S.allowFrontFill=true
+    S.guardPlacement=false S.primaryGuardPlacement=false S.spawnGuardPlanning=false
+    for _,selected in ipairs(candidates)do
+        local p=plan(selected,routes,{},nil)
+        if p then
+            if not S.alive or not S.enabled or E.AAKaiTunPaused or S.generation~=generation
+                or val(workspace:FindFirstChild('_DATA'),'GameFinished')==true then return true end
+            local balance=tonumber(val(P:FindFirstChild('_stats'),'resource'))or 0
+            if balance<selected.cost then break end
+            local existing={}for _,u in ownUnits()do existing[u.unit]=true end
+            local started=os.clock()
+            S.spawnCooldown[selected.uuid]=started+math.max(1,tonumber(selected.def.cooldown)or 10)
+            E.FyrelithPlacementLeases.entries[selected.uuid]={job=game.JobId,uuid=selected.uuid,id=selected.id,
+                existing=existing,at=started,readyAt=S.spawnCooldown[selected.uuid],cost=selected.cost,
+                beforeCash=balance,role="FRONT",farm=false}
+            status.Text="XP: placing front "..selected.id
+            local ok,reply=pcall(function()return table.pack(E.AAInvokeConnected(remote,selected.uuid,CFrame.new(p.position)))end)
+            local text=ok and reason(reply):lower()or ''
+            local rejected=ok and (reply[1]==false or text:find("can't place",1,true)or text:find('cannot place',1,true))
+            if rejected then
+                E.FyrelithPlacementLeases.entries[selected.uuid]=nil
+                S.spawnCooldown[selected.uuid]=os.clock()+0.75
+                if p.key then S.badPoints[p.key]=os.clock()+15 end
+                status.Text="XP: front position rejected; finding another position"
+            else
+                S.xpNextAction="UPGRADE"
+                S.lastPlacement={id=selected.id,confirmed=false,reply=ok and reason(reply)or tostring(reply),xp=true}
+                status.Text="XP: waiting for front placement confirmation"
+            end
+            return true
+        end
+        S.spawnCooldown[selected.uuid]=os.clock()+0.75
+    end
+    if upgrade(cash,generation,"XP")then S.xpNextAction="PLACE" return true end
+    status.Text="XP: waiting for cash, front space or unit cooldown; placement/upgrade rotation active"
+    return true
+end
 local function step()
-    if S.configApplying then return end
+    if S.configApplying or S.roundRecoveryBusy then return end
+    -- Completed results take priority over combat placement and unresolved placement leases.
+    if not Loader.IsLobby then
+        local data=workspace:FindFirstChild('_DATA')
+        if val(data,'GameFinished')==true and roundTick() then return end
+    end
     if S.hourlyReturnPending then
         local ok,watch=pcall(E.AAReadSummonWatch)
         if ok and E.FyrelithReliability.hourlyCancel(true,type(watch)=="table" and watch.active,S.teleportInFlight) then
@@ -9703,6 +9877,10 @@ local function step()
     if roundTick() then return end
     local gameData=workspace:FindFirstChild("_DATA")
     if val(gameData,"GameStarted")~=true then status.Text="Waiting for round start" return end
+    if E.FyrelithXPCombatPolicy.active(S.autoFarmXP,Loader.IsLobby,(Loader.LevelData or {}).infinite)then
+        S.xpCombatTick(tonumber(val(P:FindFirstChild("_stats"),"resource"))or 0,generation)
+        return
+    end
     if finalWaveTick(generation) then return end
     local cash=tonumber(val(P:FindFirstChild("_stats"),"resource")) or 0
     if S.infiniteSpawnGuardTick(cash,generation) then return end
@@ -10225,7 +10403,14 @@ task.spawn(function()
                 return message
             end)
             S.decisionStartedAt=nil
-            if not ok then S.lastDecisionTraceback=tostring(err) warn("FYRELITH decision error: "..tostring(err)) end
+            if not ok then
+                S.lastDecisionTraceback=tostring(err)
+                S.lastFaultSnapshot={at=os.time(),trace=tostring(err),mode=S.mode,
+                    phase=S.timeline and S.timeline.phase,placed=S.confirmed,upgraded=S.upgraded,
+                    finished=val(workspace:FindFirstChild('_DATA'),'GameFinished'),
+                    wave=val(workspace,'_wave_num')}
+                warn("FYRELITH decision error: "..tostring(err))
+            end
             perf.lastDecisionMs=(os.clock()-started)*1000
             perf.decisions=(perf.decisions or 0)+1
             if ok then E.FyrelithReliability.clearCurrentError(S)
@@ -10770,10 +10955,10 @@ do
                 local base=definition.gem_cost or definition.resource_cost.amount
                 local cost=prices.calculate_hatch_price(ss,base,"gems")
                 local live=env.SummonServiceClient.BANNER_UNITS[id]
-                if live and E.FyrelithReliability.finite(cost) and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
+                if live and E.FyrelithLiveFeaturedTarget(id) and E.FyrelithReliability.finite(cost) and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
             end
         end
-        if not banner then S.starterSummonStatus="Waiting for an available Gems banner" return end
+        if not banner then S.starterSummonStatus="Waiting for a selected target on the live Gems banner; no random starter summons" return end
         local summon=native.summon_ui
         if summon and summon.hatching then
             local info=summon.unitInfoGUI
@@ -10823,7 +11008,18 @@ do
         local ok,reply=pcall(function()
             return getgenv().AAInvokeConnected(endpoints.buy_from_banner,banner,batch==10 and "gems10" or "gems")
         end)
-        if not ok then state.error=tostring(reply):sub(1,180) saveStarter() return end
+        if not ok then
+            if tostring(reply):find('FYRELITH_FEATURED_NOT_READY:',1,true)==1 then
+                local reserved=state.pending state.pending=nil
+                local saved,why=pcall(saveStarter)
+                if not saved then state.pending=reserved error(why,0)end
+                if E.AASummonPurchaseOwner==purchaseId then E.AASummonPurchaseOwner=nil end
+                E.FyrelithHatchReceipts.retire(purchaseId)
+                S.starterSummonStatus='Selected target is not on the live banner; no starter purchase sent'
+                return
+            end
+            state.error=tostring(reply):sub(1,180) saveStarter() return
+        end
         local deadline=os.clock()+15
         while S.alive and tonumber(gems.Value)>balance-unitCost*batch and os.clock()<deadline do task.wait(0.1) end
         -- Confirmation and continuation happen on the next tick, using the real Gems balance.
