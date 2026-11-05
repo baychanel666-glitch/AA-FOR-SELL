@@ -26,7 +26,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-05-stability-fix-24'
+getgenv().FyrelithBuild='2026-11-05-audit-fix-25'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -98,7 +98,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-05-stability-fix-24'}
+local M={build='2026-11-05-audit-fix-25'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -235,6 +235,14 @@ function Policy.farmPriority(v)
  return (tonumber(v.wave) or 0)<10 and v.enabled and v.pending and v.count>=v.target and v.defenders>0
   and not v.emergency and not v.danger and not v.requiredDefense
 end
+function Policy.developmentReady(marker,owned)
+ if marker==nil then return true end
+ if type(marker)~='string' or type(owned)~='table' then return false end
+ local uuid,before=marker:match('^(.*):([^:]*)$') before=tonumber(before)
+ if not uuid or not before or before<0 or before~=before or before>=math.huge then return false end
+ local row=owned[uuid] local xp=type(row)=='table' and tonumber(row.xp) or nil
+ return xp~=nil and xp==xp and xp<math.huge and xp>before
+end
 function Policy.errorKind(message)
  local text=tostring(message or '')
  -- Only explicit pre-dispatch readiness errors may recover automatically.
@@ -299,6 +307,7 @@ function Boot.run(name,fn)
  local state={status='RUNNING',attempts=0} Boot.stages[name]=state
  local function attempt()
   state.attempts+=1 local ok,err=pcall(fn)
+  if ok and err==false then ok=false err='Stage returned false; initialization incomplete' end
   state.status=ok and 'READY' or 'WAITING' state.error=not ok and tostring(err) or nil
   return ok
  end
@@ -868,7 +877,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-05-stability-fix-24'
+ local E=getgenv()local expected='2026-11-05-audit-fix-25'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -1206,7 +1215,10 @@ if not (E.AAStatusHUD and E.AAStatusHUD.alive) then
  local store="AASmartPlacement/status_session_"..P.UserId..".json"
  local now=os.time() local saved
  pcall(function() if isfile(store) then saved=H:JSONDecode(readfile(store)) end end)
- local resume=type(saved)=="table" and saved.userId==P.UserId and type(saved.started)=="number" and (E.AASmartPlacementRestore~=nil or now-(saved.lastSeen or 0)<180)
+ local resume=type(saved)=="table" and saved.userId==P.UserId
+  and type(saved.started)=="number" and saved.started>0 and saved.started<=now
+  and type(saved.lastSeen)=="number" and saved.lastSeen<=now and saved.lastSeen>=saved.started
+  and (E.AASmartPlacementRestore~=nil or now-saved.lastSeen<180)
  local state={alive=true,started=resume and saved.started or now,lastSave=0,userId=P.UserId}
  E.AAStatusHUD=state
  local function save()
@@ -1969,12 +1981,16 @@ return function(deps)
         local decision,info=deps.evidence(pending,snapshot)
         if decision~="CONFIRMED" then return decision end
         local spent=watch.currencySpent or {}
-        if type(spent)~="table" or not counter(spent[pending.currency]) then return "CORRUPT_COUNTERS" end
+        local sessionSpent=watch.sessionSpentByCurrency or {}
+        if type(spent)~="table" or not counter(spent[pending.currency])
+            or type(sessionSpent)~="table" or not counter(sessionSpent[pending.currency]) then return "CORRUPT_COUNTERS" end
         for _,key in ipairs({"pulls","confirmedPulls","spent"}) do if not counter(watch[key]) then return "CORRUPT_COUNTERS" end end
         watch.pulls=(watch.pulls or 0)+info.pulls
         watch.confirmedPulls=(watch.confirmedPulls or 0)+info.pulls
         watch.spent=(watch.spent or 0)+info.spent
         spent[pending.currency]=(spent[pending.currency] or 0)+info.spent
+        sessionSpent[pending.currency]=(sessionSpent[pending.currency] or 0)+info.spent
+        watch.sessionSpentByCurrency=sessionSpent
         watch.currencySpent=spent watch.active=false watch.pendingPurchase=nil
         watch.lastSettledPurchaseId=pending.id watch.stopReason="Purchase confirmed after stop; no more requests"
         local writeOK,written=pcall(deps.save,watch)
@@ -1991,12 +2007,14 @@ local P=game:GetService("Players").LocalPlayer
 local H=game:GetService("HttpService")
 local store=E.AALiveAuditModules.accountStore(P.UserId,{
     read=function(path)
-        if not isfile(path) then return nil end
-        return H:JSONDecode(readfile(path))
+        if not isfile(path) and not isfile(path..'.next') and not isfile(path..'.backup') then return nil end
+        local value,reason=E.FyrelithBoot.readJSON(path)
+        assert(value,'Summon journal unreadable: '..tostring(reason))
+        return value
     end,
     write=function(path,value)
         if not isfolder("AASmartPlacement") then makefolder("AASmartPlacement") end
-        writefile(path,H:JSONEncode(value))
+        E.FyrelithBoot.write(path,H:JSONEncode(value))
         return true
     end})
 E.AAAccountWatchStore=store
@@ -2418,14 +2436,17 @@ end
 local function price(id)
     if not priceCore or type(priceCore.calculate_hatch_price)~='function' then return nil end
     local d=banners[id] if not d then return nil end
+    local stats=P:FindFirstChild("_stats")
+    if not stats or not session then return nil end
     if d.resource_cost then
         local key=d.resource_cost.id
-        local value=P._stats:FindFirstChild("_resource"..key)
+        local value=stats:FindFirstChild("_resource"..key)
         return priceCore.calculate_hatch_price(session,d.resource_cost.amount,key),key,value and tonumber(value.Value)
     elseif d.item_cost then
         return d.item_cost.amount,d.item_cost.item_id,session.inventory:get_number_of_owned_item(d.item_cost.item_id)
     elseif d.gem_cost then
-        return priceCore.calculate_hatch_price(session,d.gem_cost,"gems"),"Gems",P._stats.gem_amount.Value
+        local gems=stats:FindFirstChild("gem_amount")
+        return priceCore.calculate_hatch_price(session,d.gem_cost,"gems"),"Gems",gems and tonumber(gems.Value)
     end
     return nil
 end
@@ -2491,11 +2512,11 @@ local function setState(state,armed)
     end
 end
 saveWatch=function(active,nextCheck,timerSource)
-    if type(writefile)~="function" then return end
+    assert(type(writefile)=="function" and type(readfile)=="function","Cannot journal summons: executor file API unavailable; no purchase sent")
     if not isfolder("AASmartPlacement") then makefolder("AASmartPlacement") end
     assert(getgenv().AAWriteSummonWatch({active=active,banner=S.banner,target=S.target,targets=S.targets,
         stopReason=S.stopReason,waitingStorage=S.waitingStorage,waitingGems=S.waitingGems,untilGemsEmpty=S.untilGemsEmpty,budget=S.budget,maxPulls=S.maxPulls,pulls=S.pulls,spent=S.spent,nextCheck=nextCheck or S.nextCheck or 0,timerSource=timerSource or S.timerSource,
-        resumeArc=S.resumeArc,resumeQuest=S.resumeQuest,confirmedPulls=S.confirmedPulls,currencySpent=S.currencySpent,pendingPurchase=S.pendingPurchase,authorizedBudgets=S.authorizedBudgets,sessionSpentByCurrency=S.sessionSpentByCurrency}))
+        resumeArc=S.resumeArc,resumeQuest=S.resumeQuest,confirmedPulls=S.confirmedPulls,currencySpent=S.currencySpent,pendingPurchase=S.pendingPurchase,authorizedBudgets=S.authorizedBudgets,sessionSpentByCurrency=S.sessionSpentByCurrency,lastSettledPurchaseId=S.lastSettledPurchaseId}))
 end
 function S.ensureGemsFarmResume()
     -- Until-Gems mode includes returning to play; two false saved modes cannot fulfil it.
@@ -2574,6 +2595,7 @@ function S.settleStoppedPurchase()
                 if decision=="CONFIRMED" then
                     S.pendingPurchase=nil S.pulls=watch.pulls S.spent=watch.spent
                     S.confirmedPulls=watch.confirmedPulls S.currencySpent=watch.currencySpent
+                    S.sessionSpentByCurrency=watch.sessionSpentByCurrency S.lastSettledPurchaseId=pending.id
                     if E.AASummonPurchaseOwner==pending.id then E.AASummonPurchaseOwner=nil end
                     if S.alive then refreshStats() S.status.Text="Already sent purchase confirmed; no further requests" end
                     local resume=S.pendingResumeRequested S.pendingResumeRequested=nil
@@ -2788,6 +2810,7 @@ function S.reviewPendingPurchase(confirm)
     local reporter=E.FyrelithWebhook
     if reporter and reporter.OnSummon then pcall(reporter.OnSummon,pending,snapshot,{pulls=pending.batch,spent=pending.cost})end
     if E.FyrelithHatchReceipts then E.FyrelithHatchReceipts.retire(pending.id)end
+    S.lastSettledPurchaseId=pending.id
     S.pendingPurchase=nil S.pendingRecoveryPreview=nil E.AASummonPurchaseOwner=nil
     S.pulls=watch.pulls S.confirmedPulls=watch.confirmedPulls S.spent=watch.spent S.currencySpent=watch.currencySpent
     S.sessionSpentByCurrency=watch.sessionSpentByCurrency
@@ -2901,8 +2924,9 @@ function S.start()
                 end
                 -- Respect the game's hatch state and allow a cooldown between requests.
                 local readyDeadline=os.clock()+120
-                while (gui.summon_ui and gui.summon_ui.hatching) or os.clock()<(E.AASummonNextRequestAt or 0) do
+                while E.AAKaiTunPaused or (gui.summon_ui and gui.summon_ui.hatching) or os.clock()<(E.AASummonNextRequestAt or 0) do
                     if not S.alive or not S.running or S.generation~=generation then return end
+                    if E.AAKaiTunPaused then readyDeadline=os.clock()+120 task.wait(0.2) continue end
                     assert(os.clock()<readyDeadline,"Summon screen is still busy; stopped")
                     S.status.Text="Waiting for summon animation / cooldown before next batch"
                     task.wait(0.25)
@@ -2910,7 +2934,9 @@ function S.start()
                 cost,currency,balance=price(S.banner)
                 if S.untilGemsEmpty then
                     assert(currency=="Gems" or currency=="gems","This mode only spends Gems")
-                    if not balance or balance<cost then S.pauseForGems() return end
+                    if not E.FyrelithReliability.finite(cost) or cost<=0 then S.status.Text="Waiting for valid live banner price" task.wait(1) continue end
+                    if not E.FyrelithReliability.finite(balance) then S.status.Text="Waiting for current Gems balance" task.wait(1) continue end
+                    if balance<cost then S.pauseForGems() return end
                     S.budget=S.spent+balance
                 end
                 local profile=session.collection.collection_profile_data
@@ -2931,6 +2957,8 @@ function S.start()
                 if not allowed then S.stop(reason) return end
                 S.waitingStorage=false
                 -- Reserve the entire batch before sending; never retry an ambiguous purchase.
+                if not S.alive or not S.running or S.generation~=generation then return end
+                if E.AAKaiTunPaused then continue end
                 assert(not E.AASummonPurchaseOwner,"Another purchase is pending")
                 local requestId=game:GetService("HttpService"):GenerateGUID(false)
                 S.pendingPurchase={id=requestId,batch=batch,cost=batchCost,beforeBalance=balance,beforeOwned=before,
@@ -2960,12 +2988,23 @@ function S.start()
                 local charged=actualCurrency==currency and type(afterBalance)=="number" and math.max(0,balance-afterBalance) or 0
                 S.lastObservedDebit=charged
                 assert(received,"Purchase result unconfirmed; stopped without retrying")
-                S.confirmedPulls+=batch
-                S.spent+=batchCost S.pulls+=batch
-                S.currencySpent[currency]=(S.currencySpent[currency] or 0)+batchCost
-                S.sessionSpentByCurrency[currency]=(S.sessionSpentByCurrency[currency] or 0)+batchCost
-                S.pendingPurchase=nil E.AASummonPurchaseOwner=nil
-                refreshStats() saveWatch(true)
+                if not S.alive or S.generation~=generation then return end
+                local journal=assert(E.AAReadSummonWatch(),"Purchase journal unavailable; reservation retained")
+                assert(journal.pendingPurchase and journal.pendingPurchase.id==requestId,"Purchase journal changed; reservation retained")
+                journal.confirmedPulls=(S.confirmedPulls or 0)+batch
+                journal.spent=S.spent+batchCost journal.pulls=S.pulls+batch
+                journal.currencySpent=table.clone(S.currencySpent or {})
+                journal.sessionSpentByCurrency=table.clone(S.sessionSpentByCurrency or {})
+                journal.currencySpent[currency]=(journal.currencySpent[currency] or 0)+batchCost
+                journal.sessionSpentByCurrency[currency]=(journal.sessionSpentByCurrency[currency] or 0)+batchCost
+                journal.pendingPurchase=nil journal.lastSettledPurchaseId=requestId
+                assert(E.AAWriteSummonWatch(journal),"Confirmed purchase could not be saved; reservation retained")
+                S.confirmedPulls=journal.confirmedPulls S.spent=journal.spent S.pulls=journal.pulls
+                S.currencySpent=journal.currencySpent S.sessionSpentByCurrency=journal.sessionSpentByCurrency
+                S.lastSettledPurchaseId=requestId S.pendingPurchase=nil
+                if E.AASummonPurchaseOwner==requestId then E.AASummonPurchaseOwner=nil end
+                if E.FyrelithHatchReceipts then E.FyrelithHatchReceipts.retire(requestId)end
+                refreshStats()
                 local smart=E.AASmartPlacement
                 if smart and smart.alive and smart.requestBestTeam then smart.requestBestTeam("Summon units confirmed") end
                 local _,pending,removed=S.refreshTargets()
@@ -3117,6 +3156,7 @@ end)
 render()
 if resume and resume.pendingPurchase then
     S.pendingPurchase=resume.pendingPurchase
+    S.lastSettledPurchaseId=resume.lastSettledPurchaseId
     -- A disk journal blocks new purchases; it cannot recreate an exclusive live lease.
     if resume.pendingPurchase.job~=game.JobId or E.AASummonPurchaseOwner~=resume.pendingPurchase.id then
         E.AASummonPurchaseOwner="UNRESOLVED_SAVED_PURCHASE:"..tostring(resume.pendingPurchase.id)
@@ -3160,7 +3200,10 @@ task.spawn(function()
                     S.banner=matched
                     if S.untilGemsEmpty then
                         local cost,_,balance=price(S.banner)
-                        if not balance or balance<cost then
+                        if not E.FyrelithReliability.finite(cost) or cost<=0 or not E.FyrelithReliability.finite(balance) then
+                            S.status.Text="Waiting for valid live price and wallet" return
+                        end
+                        if balance<cost then
                             if not S.waitingGems then S.pauseForGems() end
                             return
                         end
@@ -4814,7 +4857,8 @@ local pathCache,pathRoot
 local pathSignature,pathValidatedAt
 local function paths()
     local b=workspace:FindFirstChild("_BASES") b=b and b:FindFirstChild("pve")
-    local lanes=b and b:FindFirstChild("LANES") assert(lanes,"Enemy paths unavailable")
+    local lanes=b and b:FindFirstChild("LANES")
+    assert(lanes,"FYRELITH_NOT_READY: enemy paths")
     if pathCache and pathRoot==lanes and os.clock()-(pathValidatedAt or 0)<5 then return pathCache end
     local _,signature=mapIdentity(lanes)
     pathValidatedAt=os.clock()
@@ -4974,7 +5018,10 @@ local function quickFarmPaths()
     local base=workspace:FindFirstChild("_BASES") base=base and base:FindFirstChild("pve")
     local lanes=base and base:FindFirstChild("LANES")
     if not lanes then return {} end
-    if quickFarmRoot==lanes then return quickFarmPathsCache end
+    if quickFarmRoot==lanes and os.clock()-(S.quickFarmCheckedAt or 0)<1 then return quickFarmPathsCache end
+    local _,signature=mapIdentity(lanes) S.quickFarmCheckedAt=os.clock()
+    if quickFarmRoot==lanes and S.quickFarmSignature==signature then return quickFarmPathsCache end
+    S.quickFarmSignature=signature
     local result={}
     for _,lane in lanes:GetChildren() do
         local nodes={} for _,node in lane:GetChildren() do if node:IsA("BasePart") then
@@ -6695,7 +6742,8 @@ local function enterQuest(goal)
     invoke("request_start_game",chosen.Name)
     S.questGoal=goal.text return true
 end
-local function develop()
+local function develop(manualOwner)
+    if S.developmentBusy and not manualOwner then return end
     local ss=session() if not ss or S.feedTarget=="" then return end
     local own=ss.collection:get_unit_by_uuid(S.feedTarget) if not own then return end
     if not S.autoFeedSelected and not S.autoBestDevelopment and not S.isDevelopmentFarm(defs[own.unit_id]) and S.feedEnabled and S.feedBudget>0 and os.clock()>nextFeed then
@@ -6708,7 +6756,7 @@ local function develop()
         if amount>0 then
             local before=own.xp or 0
             -- Debit the budget before sending: even an ambiguous reply cannot spend twice.
-            S.feedBudget-=1 S.saveSettings() extensionSync()
+            S.feedBudget-=1 assert(S.saveSettings(),"Cannot save Feed budget; no request sent") extensionSync()
             invoke("level_up_feed",S.feedTarget,{[S.feedItem]=1}) task.wait(0.5)
             S.lastFeed={before=before,after=own.xp or 0,item=S.feedItem}
             if S.feedBudget<=0 then S.feedEnabled=false S.saveSettings() extensionSync() end
@@ -6727,7 +6775,7 @@ local function develop()
                 status.Text="Evolution waits for allowed materials: "..r.item_id return
             end
         end
-        S.evolveEnabled=false S.saveSettings() extensionSync()
+        S.evolveEnabled=false assert(S.saveSettings(),"Cannot save Evolution reservation; no request sent") extensionSync()
         invoke("evolve_unit",S.feedTarget)
         status.Text="Evolution requested once; verify collection"
     end
@@ -7352,6 +7400,7 @@ S.testArcDevelopment=function()
         mythicProtected=not fuseMaterialAllowed({uuid="m"},{rarity="Mythic"},false,false,"main")}
 end
 local function arcDevelop(plan,required)
+    if S.developmentBusy then return false end
     if S.developmentAllowed~=true then return false end
     if S.autoFeedSelected or S.autoFuseSelected or S.autoBestDevelopment then return false end
     if not Loader.IsLobby or not S.enabled or not S.autoArcSkip then return false end
@@ -7938,7 +7987,7 @@ extensionControls=function()
             for name in (S.fuseRarities or ""):gmatch("[^,]+") do selected[name]=true end
             selected[rarity]=not selected[rarity]
             local names={} for name,on in pairs(selected) do if on then names[#names+1]=name end end table.sort(names)
-            S.fuseRarities=table.concat(names,",") S.developmentAutoBlocked=nil
+            S.fuseRarities=table.concat(names,",")
             if S.invalidateDevelopmentPreview then S.invalidateDevelopmentPreview() end
             S.saveSettings() extensionSync()
         end)
@@ -8002,7 +8051,7 @@ function S.toggleDevelopmentTarget(uuid)
     local map=S.selectedDevelopmentTargets() map[uuid]=not map[uuid]
     local ids={} for id,on in pairs(map) do if on then ids[#ids+1]=id end end table.sort(ids)
     S.developmentTargets=game:GetService("HttpService"):JSONEncode(ids)
-    S.developmentAutoBlocked=nil
+   
     S.feedTarget=uuid
     if S.saveSettings then S.saveSettings() end
 end
@@ -8030,6 +8079,7 @@ function S.autoBestTeamEligible(profile)
     return false
 end
 function S.autoBestUnlockTick()
+    if S.developmentBusy then return end
     if S.configApplying or S.developmentAllowed~=true then return end
     if not S.instanceGuard or S.autoBestThresholdHandled then return end
     local ss=session()
@@ -8048,7 +8098,7 @@ function S.setAutoBestDevelopment(on,automatic)
     S.autoBestThresholdHandled=true
     S.autoBestManualOff=not automatic and on~=true
     S.autoBestDevelopment=on==true S.autoFeedSelected=false S.autoFuseSelected=false
-    S.developmentAutoBlocked=nil
+   
     if S.saveSettings then S.saveSettings() end
     if S.syncDevelopmentModes then S.syncDevelopmentModes() end
 end
@@ -8062,6 +8112,14 @@ function S.autoDevelopmentTick()
     if not Loader.IsLobby or not (S.autoFeedSelected or S.autoFuseSelected or S.autoBestDevelopment) or S.developmentBusy then return end
     local ss=session() if not ss then return end
     local profile=ss.collection.collection_profile_data local selected=S.selectedDevelopmentTargets()
+    if S.developmentAutoBlocked then
+        if not E.FyrelithPolicies.developmentReady(S.developmentAutoBlocked,profile.owned_units) then
+            S.autoDevelopmentStatus="Previous Feed/Fuse result unresolved; changing target does not authorize an automatic repeat"
+            return
+        end
+        S.developmentAutoBlocked=nil
+        assert(S.saveSettings(),"Cannot save confirmed development result")
+    end
     if S.autoBestDevelopment then
         local best=S.bestDevelopmentTarget() selected={}
         if best then selected[best.uuid]=true S.autoBestTarget=best end
@@ -8143,6 +8201,8 @@ function S.autoDevelopmentTick()
     local inventoryCount=0 for _ in pairs(profile.owned_units) do inventoryCount+=1 end
     local fingerprint=target.uuid..":"..tostring(target.own.xp)
     if S.developmentAutoBlocked==fingerprint then S.autoDevelopmentStatus="Result unconfirmed; waiting for inventory change (auto remains ON)" return end
+    S.developmentAutoBlocked=fingerprint
+    assert(S.saveSettings(),"Cannot save development reservation; no Feed/Fuse request sent")
     S.developmentBusy=true
     local before=target.own.xp or 0
     S.autoDevelopmentStatus=material.." -> "..(defs[target.own.unit_id].name or target.own.unit_id)
@@ -8162,6 +8222,7 @@ function S.autoDevelopmentTick()
         S.autoDevelopmentStatus="XP unconfirmed; no automatic repeat of this request"
     else
         S.developmentTurns=S.developmentTurns or {} S.developmentTurns[target.uuid]=(S.developmentTurns[target.uuid] or 0)+1
+        S.developmentAutoBlocked = nil S.saveSettings()
         S.lastDevelopmentKind=material:sub(1,3)=="EXP" and "FOOD" or "FUSE"
         S.autoDevelopmentStatus="Confirmed "..material.." -> "..(defs[target.own.unit_id].name or target.own.unit_id)
     end
@@ -8208,7 +8269,7 @@ function S.openDevelopmentWindow()
     autoFeedButton=btn("",10,560,190,30,function()
         assert(next(S.selectedDevelopmentTargets()),"Select target characters first")
         S.autoBestThresholdHandled=true S.autoBestManualOff=true
-        S.autoFeedSelected=not S.autoFeedSelected S.autoBestDevelopment=false S.developmentAutoBlocked=nil
+        S.autoFeedSelected=not S.autoFeedSelected S.autoBestDevelopment=false
         if S.saveSettings then S.saveSettings() end syncAuto() extensionSync()
         note.Text="Auto Feed uses your configured EXP item continuously in lobby until manually stopped."
     end)
@@ -8216,7 +8277,7 @@ function S.openDevelopmentWindow()
         assert(next(S.selectedDevelopmentTargets()),"Select target characters first")
         assert(S.fuseRarities~="","Select donor rarities first")
         S.autoBestThresholdHandled=true S.autoBestManualOff=true
-        S.autoFuseSelected=not S.autoFuseSelected S.autoBestDevelopment=false S.developmentAutoBlocked=nil
+        S.autoFuseSelected=not S.autoFuseSelected S.autoBestDevelopment=false
         if S.saveSettings then S.saveSettings() end syncAuto() extensionSync()
         note.Text="Auto Fuse consumes unprotected units of selected rarities until manually stopped."
     end)
@@ -8365,13 +8426,14 @@ function S.openDevelopmentWindow()
             action.Text="CONFIRM FUSE "..#preview.units.." UNITS - permanently consumed" return
         end
         local before=own.xp or 0 local request local expected=mode local consumed=0
+        local requestTarget=S.feedTarget
         if mode=="Fuse" then
             assert(preview.target==S.feedTarget,"Target changed; preview again")
             local eligible={} for _,r in ipairs(candidates()) do eligible[r.uuid]=true end
             local ids=preview.units
             for _,uuid in ipairs(ids) do assert(eligible[uuid],"Donor changed/protected; preview again") end
             consumed=#ids S.fuseBudget=math.max(0,(S.fuseBudget or 0)-consumed) fuseAmount.Text=tostring(S.fuseBudget)
-            request=function() return invoke("feed_units",S.feedTarget,ids) end
+            request=function() return invoke("feed_units",requestTarget,ids) end
         elseif mode=="Feed" then
             local limit=tonumber(amount.Text) assert(limit and limit>=1 and limit==math.floor(limit),"Enter positive whole EXP item amount")
             local f=cachedLookup("function",{Constants={"LevelUpFeed"}},true) local util=f and getfenv(f).LevelUtil
@@ -8379,21 +8441,24 @@ function S.openDevelopmentWindow()
             assert(allowed,"Choose a supported EXP item ID")
             consumed=math.min(limit,ss.inventory:get_number_of_owned_item(itemInput.Text)) assert(consumed>0,"No EXP items available")
             S.feedItem=itemInput.Text S.feedBudget=0 amount.Text="0" S.feedEnabled=false
-            local itemId=S.feedItem request=function() return invoke("level_up_feed",S.feedTarget,{[itemId]=consumed}) end
+            local itemId=S.feedItem request=function() return invoke("level_up_feed",requestTarget,{[itemId]=consumed}) end
         else
             local ok,budget=pcall(function() return game:GetService("HttpService"):JSONDecode(recipeInput.Text) end)
             assert(ok and type(budget)=="table","Evolution budget must be valid JSON")
             S.evolveBudget=recipeInput.Text S.feedEnabled=false S.evolveEnabled=true
-            request=function() develop() return "Evolution budget checked" end
+            request=function()
+                assert(S.feedTarget==requestTarget,"Evolution target changed before dispatch; no request sent")
+                develop(true) return "Evolution budget checked"
+            end
         end
-        resetPreview() save() busy=true action.Text="WAITING FOR GAME..."
+        resetPreview() save() busy=true S.developmentBusy=true action.Text="WAITING FOR GAME..."
         task.spawn(function()
             local ok,reply=pcall(request)
             local deadline=os.clock()+3
             while ok and expected~="Evolution" and (own.xp or 0)<=before and os.clock()<deadline and S.alive do task.wait(0.1) end
-            busy=false
+            busy=false S.developmentBusy=false
             if not S.alive or not win.Parent then return end
-            local confirmed=expected=="Evolution" and not ss.collection.collection_profile_data.owned_units[S.feedTarget] or (own.xp or 0)>before
+            local confirmed=expected=="Evolution" and not ss.collection.collection_profile_data.owned_units[requestTarget] or (own.xp or 0)>before
             changeMode(mode) render()
             note.Text=not ok and ("Failed; no automatic retry: "..tostring(reply):sub(1,150)) or confirmed and (expected.." confirmed by game") or "Result not confirmed; no automatic retry. Check inventory / main status."
         end)
@@ -8417,7 +8482,7 @@ local settingsFile=E.FyrelithBoot.accountPath("settings.json")
 local HTTP=game:GetService("HttpService")
 local fields={"autoFarmXP","disable3D","disableUnitAnimations","autoJoinInfinite","storyAutomationEnabled","developmentAllowed","kaiTunConfigured","kaiTunPaused","autoDaily","autoInfiniteRetry","autoRedeem","arcRunKind","autoInfinite","infiniteStage","skipWaveLimitEnabled","skipWaveLimit","infiniteEndEnabled","infiniteEndWave","infiniteEndReturnLobby","reserve","upgradeEnabled","autoStart","autoNext","autoRetry","autoRewards","elementEnabled","enabled","autorun",
     "lobbyRewards","battlePassRewards","levelRewards","valueUpgrades","dynamicReserve","safeSkip","autoSkipWave","autoTarget","mobileMode","autoTeam","autoArcSkip","arcAutoFeed","arcAutoFuse","arcWorld","arcStage","arcMainAttack","finalWaveSell","questFarm","farmEnabled","stackEnabled","airDefense",
-    "feedEnabled","evolveEnabled","feedTarget","feedItem","feedBudget","evolveBudget","fuseBudget","fuseRarities","developmentTargets","autoFeedSelected","autoFuseSelected","autoBestDevelopment","autoBestThresholdHandled","autoBestManualOff","autoBestPolicyOwner","starterSetupSnapshot"}
+    "developmentAutoBlocked","feedEnabled","evolveEnabled","feedTarget","feedItem","feedBudget","evolveBudget","fuseBudget","fuseRarities","developmentTargets","autoFeedSelected","autoFuseSelected","autoBestDevelopment","autoBestThresholdHandled","autoBestManualOff","autoBestPolicyOwner","starterSetupSnapshot"}
 function S.settingsSnapshot()
     local settings={version=2,userId=P.UserId,sourceVersion=E.FyrelithBoot.version,build=E.FyrelithBuild}
     for _,field in fields do settings[field]=S[field] end
@@ -8461,7 +8526,7 @@ local function applySettings(settings)
         local v=settings[field]
         if field=="skipWaveLimit" or field=="infiniteEndWave" or field=="reserve" or field=="feedBudget" or field=="fuseBudget" or field=="arcMainAttack" then
             if type(v)=="number" and v>=0 and v<math.huge then S[field]=math.floor(v) end
-        elseif field=="arcRunKind" or field=="infiniteStage" or field=="autoBestPolicyOwner" or field=="starterSetupSnapshot" or field=="feedTarget" or field=="feedItem" or field=="developmentTargets" or field=="fuseRarities" or field=="evolveBudget" or field=="arcWorld" or field=="arcStage" then
+        elseif field=="developmentAutoBlocked" or field=="arcRunKind" or field=="infiniteStage" or field=="autoBestPolicyOwner" or field=="starterSetupSnapshot" or field=="feedTarget" or field=="feedItem" or field=="developmentTargets" or field=="fuseRarities" or field=="evolveBudget" or field=="arcWorld" or field=="arcStage" then
             if type(v)=="string" and #v<5000 then S[field]=v end
         elseif type(v)=="boolean" then S[field]=v end
     end
@@ -9479,8 +9544,9 @@ end
 -- Place one opening guard, then leave the existing economy/upgrade dispatcher unchanged.
 function S.infiniteSpawnGuardTick(cash,generation)
     if not (Loader.LevelData and Loader.LevelData.infinite==true) then return false end
-    local state=S.infiniteSpawnGuard
-    if not state or state.job~=game.JobId then state={job=game.JobId} S.infiniteSpawnGuard=state end
+    local state=E.FyrelithInfiniteSpawnGuard
+    if not state or state.job~=game.JobId then state={job=game.JobId} E.FyrelithInfiniteSpawnGuard=state end
+    S.infiniteSpawnGuard=state
     if state.done then return false end
     if os.clock()<(state.retryAt or 0) then return false end
     local lanes=paths()
@@ -10227,9 +10293,14 @@ do
     local file="AASmartPlacement/starter_summon_"..P.UserId..".json"
     local state={version=2,phase="IDLE",active=false,done=false,pulls=0,spent=0,round=0}
     local readOK,saved=pcall(function()
-        return isfile(file) and game:GetService("HttpService"):JSONDecode(readfile(file))
+        if not isfile(file) and not isfile(file..'.next') and not isfile(file..'.backup') then return nil end
+        return assert(E.FyrelithBoot.readJSON(file),"Starter journal has no valid copy; initialization held")
     end)
-    if readOK and type(saved)=="table" then state=saved end
+    if not readOK then error("Starter journal unreadable; automatic enrollment held: "..tostring(saved))end
+    if readOK and type(saved)=="table" then
+        assert(saved.userId==nil or saved.userId==P.UserId,"Starter journal belongs to another account")
+        state=saved
+    end
     if not (readOK and type(saved)=="table") then
         pcall(function()
             local cfg=startupSettings
@@ -10257,7 +10328,8 @@ do
     local function saveStarter()
         if not isfolder("AASmartPlacement") then makefolder("AASmartPlacement") end
         state.updated=os.time()
-        writefile(file,game:GetService("HttpService"):JSONEncode(state))
+        state.userId=P.UserId
+        E.FyrelithBoot.write(file,game:GetService("HttpService"):JSONEncode(state))
         S.starterSetupSnapshot=game:GetService("HttpService"):JSONEncode({userId=P.UserId,state=state})
         if S.saveSettings then S.saveSettings() end
     end
@@ -10678,8 +10750,15 @@ do
                 exclusivePurchaseId=E.AASummonPurchaseOwner==p.id and p.id or nil})
             S.starterPurchaseEvidence=decision
             if decision=="CONFIRMED" then
+                local beforePulls,beforeSpent=state.pulls,state.spent
                 state.pulls=(state.pulls or 0)+info.pulls state.spent=(state.spent or 0)+info.spent
-                state.pending=nil E.AASummonPurchaseOwner=nil saveStarter()
+                state.pending=nil
+                local committed,why=pcall(saveStarter)
+                if not committed then
+                    state.pending=p state.pulls=beforePulls state.spent=beforeSpent
+                    error("Starter settlement not saved; reservation retained: "..tostring(why))
+                end
+                if E.AASummonPurchaseOwner==p.id then E.AASummonPurchaseOwner=nil end
             else
                 S.starterSummonStatus="Purchase "..decision.."; paused without resending"
                 return
@@ -10691,7 +10770,7 @@ do
                 local base=definition.gem_cost or definition.resource_cost.amount
                 local cost=prices.calculate_hatch_price(ss,base,"gems")
                 local live=env.SummonServiceClient.BANNER_UNITS[id]
-                if live and type(cost)=="number" and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
+                if live and E.FyrelithReliability.finite(cost) and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
             end
         end
         if not banner then S.starterSummonStatus="Waiting for an available Gems banner" return end
@@ -12288,6 +12367,7 @@ local function template()
  table.insert(a,'}') return table.concat(a,'\n')
 end
 local function preflight(conf)
+ if S.developmentBusy then return false,"Wait for the current development request before applying configuration" end
  local permission=conf['Allow Development Resources']
  if permission==nil then permission=S.developmentAllowed==true end
  local dev={}
@@ -12387,7 +12467,7 @@ local function apply(conf,save)
     elseif field=='enabled' then S.setEnabled(value)
     elseif field=='autoBestDevelopment' then S.setAutoBestDevelopment(value)
     elseif field=='autoFeedSelected' or field=='autoFuseSelected' then
-     S[field]=value S.autoBestDevelopment=false S.autoBestThresholdHandled=true S.autoBestManualOff=true S.developmentAutoBlocked=nil
+     S[field]=value S.autoBestDevelopment=false S.autoBestThresholdHandled=true S.autoBestManualOff=true
     else S[field]=value end
    end
   end
