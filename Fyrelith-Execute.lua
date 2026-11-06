@@ -1,6 +1,53 @@
 -- Fyrelith full runtime: current UI and confirmed text-only Discord reports.
 local E=getgenv()
 local source=[========================================[
+do
+ local E=getgenv()
+ local guard={tickets={},saved={},serial=0,nextId=0}
+ local owned={FyrelithControlCenter=true,AAFramelessStatus=true,AAFarmBlackBackground=true,AASmartPlacement=true,AASummonDex=true}
+ E.FyrelithMouseGuard=guard
+ function E.FyrelithProtectMouseUI()
+  guard.nextId+=1 local id=guard.nextId
+  guard.tickets[id]=true guard.serial+=1
+  E.FyrelithSyntheticMouseUntil=math.huge
+  local player=game:GetService('Players').LocalPlayer
+  local pg=player and player:FindFirstChild('PlayerGui')
+  if pg then
+   for _,g in ipairs(pg:GetChildren())do
+    if g:IsA('ScreenGui')and owned[g.Name]then
+     if guard.saved[g]==nil then guard.saved[g]=g.Enabled end
+     g.Enabled=false
+    end
+   end
+  end
+  return id
+ end
+ function E.FyrelithReleaseMouseUI(id)
+  if not guard.tickets[id]then return end
+  guard.tickets[id]=nil guard.serial+=1
+  if next(guard.tickets)then return end
+  E.FyrelithSyntheticMouseUntil=os.clock()+0.5
+  local serial=guard.serial
+  task.delay(.15,function()
+   if serial~=guard.serial or next(guard.tickets)then return end
+   local saved=guard.saved guard.saved={}
+   for g,enabled in pairs(saved)do
+    if g.Parent then
+     local hidden=E.FyrelithUIVisibility and E.FyrelithUIVisibility.hidden
+     g.Enabled=not hidden and enabled or false
+    end
+   end
+  end)
+ end
+ function E.FyrelithMouseButtonEvent(backend,...)
+  local id=E.FyrelithProtectMouseUI()
+  local result=table.pack(pcall(backend.SendMouseButtonEvent,backend,...))
+  E.FyrelithReleaseMouseUI(id)
+  if not result[1]then error(result[2],0)end
+  return table.unpack(result,2,result.n)
+ end
+end
+
 -- FYRELITH_START_CONFIG_V1: validate before replacing the running controller.
 do
  local E=getgenv()
@@ -26,7 +73,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-05-xp-front-spam-29'
+getgenv().FyrelithBuild='2026-11-06-all-mouse-guard-33'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -80,14 +127,19 @@ do
     local vim=game:GetService('VirtualInputManager')
     nextAttempt=now+2 state.attempts+=1 awaiting=true state.status='Confirming notice'
     local clicked,why=pcall(function()
-     if control then control.Enabled=false end
-     vim:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
+     -- Delta: use the native button event after its cooldown.
+     if type(firesignal)=='function' then
+      firesignal(button.Activated)
+      return
+     end
+     -- UI isolation is handled by the shared mouse backend.
+     getgenv().FyrelithMouseButtonEvent(vim,pos.X,pos.Y,0,true,game,0)
      task.wait(.05)
-     vim:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)
+     getgenv().FyrelithMouseButtonEvent(vim,pos.X,pos.Y,0,false,game,0)
     end)
-    if control and control.Parent then control.Enabled=enabled end
+    -- Shared backend restores the original UI visibility after release.
     if not clicked then
-     pcall(function()vim:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)end)
+     pcall(function()getgenv().FyrelithMouseButtonEvent(vim,pos.X,pos.Y,0,false,game,0)end)
      error(why,0)
     end
    end)
@@ -98,7 +150,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-05-xp-front-spam-29'}
+local M={build='2026-11-06-all-mouse-guard-33'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -828,13 +880,14 @@ function E.FyrelithFindRewardContinue()
   local label=ready()if not label then return end
   local point=label.AbsolutePosition+label.AbsoluteSize/2
   local vim=game:GetService('VirtualInputManager')
-  local ok,why=pcall(function()
-   vim:SendMouseButtonEvent(point.X,point.Y,0,true,game,0)
-   vim:SendMouseButtonEvent(point.X,point.Y,0,false,game,0)
-  end)
-  -- Always attempt release if the input backend fails partway through.
-  if not ok then pcall(function()vim:SendMouseButtonEvent(point.X,point.Y,0,false,game,0)end)error(why,0)end
-  E.FyrelithRewardVirtualClicks=(E.FyrelithRewardVirtualClicks or 0)+1
+   local ok,why=pcall(function()
+    getgenv().FyrelithMouseButtonEvent(vim,point.X,point.Y,0,true,game,0)
+    task.wait(.05)
+    getgenv().FyrelithMouseButtonEvent(vim,point.X,point.Y,0,false,game,0)
+   end)
+   pcall(function()getgenv().FyrelithMouseButtonEvent(vim,point.X,point.Y,0,false,game,0)end)
+   if not ok then error(why,0)end
+   E.FyrelithRewardVirtualClicks=(E.FyrelithRewardVirtualClicks or 0)+1
  end
 end
 
@@ -909,7 +962,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-05-xp-front-spam-29'
+ local E=getgenv()local expected='2026-11-06-all-mouse-guard-33'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -2080,8 +2133,19 @@ function E.FyrelithLiveFeaturedTarget(banner)
  end
  return E.FyrelithReliability.featuredTarget(targets,live)
 end
+-- Only the journaled new-player Story/Skip setup can summon without targets.
+function E.FyrelithStarterStoryPurchaseAllowed(S,setupActive,owner,banner,mode)
+ local st=S and S.starterSummon
+ local p=st and st.pending
+ return S~=nil and S.storyAutomationEnabled==true and S.autoFarmXP~=true
+  and setupActive==true and st.active==true and st.done~=true
+  and (st.phase=='INITIAL_SUMMON' or st.phase=='SECOND_SUMMON')
+  and type(p)=='table' and p.phase==st.phase and type(p.id)=='string'
+  and owner==p.id and p.banner==banner
+  and ((p.batch==1 and mode=='gems') or (p.batch==10 and mode=='gems10'))
+end
 E.AAInvokeConnected=function(...)
- local remote,banner=...
+ local remote,banner,mode=...
  local name=remote and remote.Name
  if E.AAKaiTunPaused then
   local S=E.AASmartPlacement local data=workspace:FindFirstChild('_DATA')
@@ -2092,7 +2156,8 @@ E.AAInvokeConnected=function(...)
  end
  if name=='buy_from_banner' then
   local ok,target=pcall(E.FyrelithLiveFeaturedTarget,banner)
-  if not ok or not target then error('FYRELITH_FEATURED_NOT_READY: chosen target is not on the live banner; no request sent',0)end
+  local starter=E.FyrelithStarterStoryPurchaseAllowed(E.AASmartPlacement,E.AAStarterSetupActive,E.AASummonPurchaseOwner,banner,mode)
+  if not starter and (not ok or not target) then error('FYRELITH_FEATURED_NOT_READY: chosen target is not on the live banner; no request sent',0)end
  end
  return E.AAConnectionGuard.invoke(...)
 end
@@ -3307,8 +3372,8 @@ task.spawn(function()
                 if not camera then return end
                 local y=math.floor(camera.ViewportSize.Y*0.5)
                 local input=game:GetService("VirtualInputManager")
-                input:SendMouseButtonEvent(8,y,0,true,game,0)
-                input:SendMouseButtonEvent(8,y,0,false,game,0)
+                getgenv().FyrelithMouseButtonEvent(input,8,y,0,true,game,0)
+                getgenv().FyrelithMouseButtonEvent(input,8,y,0,false,game,0)
             end)
             S.autoSkipError=not ok and tostring(err) or nil
         end
@@ -8746,6 +8811,7 @@ function S.setAutoFarmXP(on,save)
     if save~=false and S.saveSettings then S.saveSettings() end
 end
 function S.setKaiTunPaused(paused,runtimeFault)
+    S.lastPauseChange={paused=paused==true,runtimeFault=runtimeFault==true,at=os.time(),trace=debug.traceback('Pause change',2):sub(1,900)}
     if runtimeFault then
         if not S.runtimeFaultPaused then S.pauseBeforeRuntimeFault=S.kaiTunPaused==true end
         S.runtimeFaultPaused=true
@@ -8767,7 +8833,7 @@ end
 function S.installKaiTunControls()
     for _,item in pairs(sections) do item.header.Visible=false item.content.Visible=false end
     controlParent=body
-    S.kaiTunButton=button("PAUSE - Kai Tun running",function() S.setKaiTunPaused(not S.kaiTunPaused) end)
+    S.kaiTunButton=button("PAUSE - Kai Tun running",function() if os.clock()<(getgenv().FyrelithSyntheticMouseUntil or 0) then return end S.setKaiTunPaused(not S.kaiTunPaused) end)
     S.kaiTunButton.LayoutOrder=-10
     local open=button("Choose Summon targets / count",function()
         local dex=E.AASummonDex
@@ -10828,7 +10894,12 @@ do
         local second=state.phase=="SECOND_SUMMON"
         if second then state.secondSummonFinished=true state.secondSummonFinishedAt=os.time()
         elseif state.phase=="INITIAL_SUMMON" then state.firstSummonFinished=true end
-        transition("GEMS_EXHAUSTED") -- Respect the current Auto Best Team setting.
+        -- Story/Skip new-player setup requires confirmed Equip Best after each round.
+        if S.storyAutomationEnabled and not S.autoFarmXP then
+            S.autoTeam=true
+            S.requestBestTeam('Starter Story summon round completed',true)
+        end
+        transition("GEMS_EXHAUSTED")
         if not S.enabled then S.setEnabled(true) end
         S.inventoryPlanCache=nil S.unitPotentialCache=nil
         if not second and S.storyAutomationEnabled then S.autoArcSkip=true end
@@ -10955,17 +11026,17 @@ do
                 local base=definition.gem_cost or definition.resource_cost.amount
                 local cost=prices.calculate_hatch_price(ss,base,"gems")
                 local live=env.SummonServiceClient.BANNER_UNITS[id]
-                if live and E.FyrelithLiveFeaturedTarget(id) and E.FyrelithReliability.finite(cost) and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
+                if live and ((S.storyAutomationEnabled==true and not S.autoFarmXP) or E.FyrelithLiveFeaturedTarget(id)) and E.FyrelithReliability.finite(cost) and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
             end
         end
-        if not banner then S.starterSummonStatus="Waiting for a selected target on the live Gems banner; no random starter summons" return end
+        if not banner then S.starterSummonStatus=(S.storyAutomationEnabled and not S.autoFarmXP) and "Waiting for an active live Gems banner" or "Waiting for a selected target on the live Gems banner; no random starter summons" return end
         local summon=native.summon_ui
         if summon and summon.hatching then
             local info=summon.unitInfoGUI
             if info and info.Enabled then
                 pcall(function()
                     local input=game:GetService("VirtualInputManager") local y=math.floor(workspace.CurrentCamera.ViewportSize.Y/2)
-                    input:SendMouseButtonEvent(8,y,0,true,game,0) input:SendMouseButtonEvent(8,y,0,false,game,0)
+                    getgenv().FyrelithMouseButtonEvent(input,8,y,0,true,game,0) getgenv().FyrelithMouseButtonEvent(input,8,y,0,false,game,0)
                 end)
             end
             S.starterSummonStatus="Waiting for starter summon results" return
@@ -11206,7 +11277,7 @@ metric("Gems",16,"rbxassetid://71405874061254") metric("Gold",160,"rbxassetid://
 label(left,"RuntimeLabel","TOTAL RUNTIME",16,252,220,22,13,muted) mirror(left,"Runtime",230,248,160,30,22)
 label(left,"RuntimeHint","Since first launch",16,282,350,22,13,muted)
 label(right,"KaiTunTitle","Kai Tun",16,12,260,30,17)
-local pause=button(right,"Pause","Pause automation",16,52,266,38,function() S.setKaiTunPaused(not S.kaiTunPaused) end)
+local pause=button(right,"Pause","Pause automation",16,52,266,38,function() if os.clock()<(getgenv().FyrelithSyntheticMouseUntil or 0) then return end S.setKaiTunPaused(not S.kaiTunPaused) end)
 pause.BackgroundColor3=Color3.fromRGB(49,83,68)
 local dex=button(right,"SummonDex","Summon Dex",16,100,266,38,function()
  if not (E.AASummonDex and E.AASummonDex.alive and E.AASummonDex.modelPreviewRevision==9) then assert(loadstring(E.AASummonDexSource))() end
@@ -11605,18 +11676,20 @@ getgenv().FyrelithBoot.run("Release even if a controller operation failed midway
  local player=game:GetService('Players').LocalPlayer
  while not player do task.wait(.1) player=game:GetService('Players').LocalPlayer end
  local previous=environment.FyrelithAntiAFK
- if not (previous and previous.Alive and previous.Player==player and previous.IdledConnection and previous.IdledConnection.Connected) then
+ if not (previous and previous.MouseGuardVersion==33 and previous.Alive and previous.Player==player and previous.IdledConnection and previous.IdledConnection.Connected) then
   if previous and previous.Cleanup then pcall(previous.Cleanup) end
   local input=game:GetService('UserInputService')
   local virtualUser=game:GetService('VirtualUser')
   local anti={Alive=true,Player=player,Pulses=0,LastInput=os.clock(),LastPulse=-math.huge,Busy=false,Connections={}}
   environment.FyrelithAntiAFK=anti
+   anti.MouseGuardVersion=33
   local function listen(signal,callback)
    local connection=signal:Connect(callback) table.insert(anti.Connections,connection) return connection
   end
   function anti.Pulse()
    if not anti.Alive or anti.Busy or os.clock()-anti.LastPulse<20 then return false end
    anti.Busy=true
+   local mouseTicket=environment.FyrelithProtectMouseUI()
    local camera=workspace.CurrentCamera
    local frame=camera and camera.CFrame or CFrame.new()
    local ok,err=pcall(function()
@@ -11640,6 +11713,7 @@ getgenv().FyrelithBoot.run("Release even if a controller operation failed midway
    if ok then anti.Pulses+=1 anti.LastPulse=anti.LastAttempt anti.LastError=nil
    else anti.LastError=tostring(err) end
    anti.Busy=false
+   environment.FyrelithReleaseMouseUI(mouseTicket)
    return ok
   end
   local function activity() anti.LastInput=os.clock() end
@@ -11664,7 +11738,7 @@ do
  local player=game:GetService('Players').LocalPlayer
  while not player do task.wait(.1) player=game:GetService('Players').LocalPlayer end
  local previous=environment.FyrelithStandaloneRejoin
- if not (previous and previous.Alive and previous.Player==player and previous.Job==game.JobId and previous.Version==2) then
+ if not (previous and previous.MouseGuardVersion==33 and previous.Alive and previous.Player==player and previous.Job==game.JobId and previous.Version==2) then
   if previous and previous.Cleanup then pcall(previous.Cleanup) end
   local guiService=game:GetService('GuiService')
   local teleport=game:GetService('TeleportService')
