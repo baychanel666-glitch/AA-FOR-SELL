@@ -73,7 +73,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-06-all-mouse-guard-33'
+getgenv().FyrelithBuild='2026-11-07-xp-starter-once-35'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -150,7 +150,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-06-all-mouse-guard-33'}
+local M={build='2026-11-07-xp-starter-once-35'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -962,7 +962,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-06-all-mouse-guard-33'
+ local E=getgenv()local expected='2026-11-07-xp-starter-once-35'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -2134,10 +2134,18 @@ function E.FyrelithLiveFeaturedTarget(banner)
  return E.FyrelithReliability.featuredTarget(targets,live)
 end
 -- Only the journaled new-player Story/Skip setup can summon without targets.
+function E.FyrelithStarterRoundAllowed(S)
+ local st=S and S.starterSummon
+ if not st or st.active~=true or st.done==true then return false end
+ if S.autoFarmXP==true then
+  return st.phase=='INITIAL_SUMMON' and st.firstSummonFinished~=true
+ end
+ return S.storyAutomationEnabled==true and (st.phase=='INITIAL_SUMMON' or st.phase=='SECOND_SUMMON')
+end
 function E.FyrelithStarterStoryPurchaseAllowed(S,setupActive,owner,banner,mode)
  local st=S and S.starterSummon
  local p=st and st.pending
- return S~=nil and S.storyAutomationEnabled==true and S.autoFarmXP~=true
+ return E.FyrelithStarterRoundAllowed(S)
   and setupActive==true and st.active==true and st.done~=true
   and (st.phase=='INITIAL_SUMMON' or st.phase=='SECOND_SUMMON')
   and type(p)=='table' and p.phase==st.phase and type(p.id)=='string'
@@ -2848,9 +2856,14 @@ render=function()
             local check=text(card,S.targets[id] and "[X]" or "[ ]",4,2,35,24) check.ZIndex=31
             S.targetChecks[id]=check
             local overlay=button(card,"",0,0,174,210,function()
-                assert(not S.running,"Stop before changing targets")
                 if ownCount(id)>0 then S.status.Text="Already owned; choose another target" return end
-                local armed=S.watchArmed
+                if S.pendingPurchase or E.AASummonPurchaseOwner then
+                    S.status.Text="Waiting for the current purchase result before changing targets" return
+                end
+                if S.running or S.watchArmed or S.waitingGems then
+                    S.stop("Stopped for target editing. Press START after choosing targets.")
+                end
+                local armed=false
                 S.targets[id]=not S.targets[id] or nil
                 local matched=S.refreshTargets()
                 S.banner=matched or S.banner
@@ -2889,7 +2902,7 @@ local searchVersion=0
 connect(search:GetPropertyChangedSignal("Text"),function()
     searchVersion+=1 local version=searchVersion
     task.delay(0.25,function()
-        if S.alive and version==searchVersion and not S.running then S.page=1 render() end
+        if S.alive and version==searchVersion then S.page=1 render() end
     end)
 end)
 function S.reviewPendingPurchase(confirm)
@@ -10880,6 +10893,11 @@ do
     end
     local function finishSummonRound()
         if S.autoFarmXP or state.xpFarmEnrollment then
+            S.autoTeam=true
+            S.requestBestTeam('XP starter summons complete: confirm Equip Best before World 1 Act 1',true)
+            local dex=E.AASummonDex
+            if dex and dex.alive then dex.stop('XP initial summon round complete; Auto Summon OFF') end
+            S.summonBlocking=false S.summonCheckDue=false S.resultWatchDue=false
             state.firstSummonFinished=true state.done=true state.active=false state.phase="DONE"
             state.lastEvent="XP_INITIAL_SUMMON_COMPLETE"
             E.AAStarterSetupActive=false E.AAStarterSummonBusy=false S.starterSummonBlocking=false
@@ -11026,10 +11044,10 @@ do
                 local base=definition.gem_cost or definition.resource_cost.amount
                 local cost=prices.calculate_hatch_price(ss,base,"gems")
                 local live=env.SummonServiceClient.BANNER_UNITS[id]
-                if live and ((S.storyAutomationEnabled==true and not S.autoFarmXP) or E.FyrelithLiveFeaturedTarget(id)) and E.FyrelithReliability.finite(cost) and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
+                if live and (E.FyrelithStarterRoundAllowed(S) or E.FyrelithLiveFeaturedTarget(id)) and E.FyrelithReliability.finite(cost) and cost>0 and (not unitCost or cost<unitCost or cost==unitCost and id<banner) then banner=id unitCost=cost end
             end
         end
-        if not banner then S.starterSummonStatus=(S.storyAutomationEnabled and not S.autoFarmXP) and "Waiting for an active live Gems banner" or "Waiting for a selected target on the live Gems banner; no random starter summons" return end
+        if not banner then S.starterSummonStatus=E.FyrelithStarterRoundAllowed(S) and "Waiting for an active live Gems banner" or "Waiting for a selected target on the live Gems banner; no random starter summons" return end
         local summon=native.summon_ui
         if summon and summon.hatching then
             local info=summon.unitInfoGUI
