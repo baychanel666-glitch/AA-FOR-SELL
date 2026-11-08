@@ -1,6 +1,24 @@
 -- Fyrelith full runtime: current UI and confirmed text-only Discord reports.
 local E=getgenv()
 local source=[========================================[
+-- FYRELITH_UNIT_NATIVE_GATES_V1
+do
+ local E=getgenv()
+ local P=game:GetService('Players').LocalPlayer
+ if P then
+  local H=game:GetService('HttpService')
+  local path='AASmartPlacement/accounts/'..P.UserId..'/unit-selection.json'
+  for _,suffix in ipairs({'','.next','.backup'})do
+   local ok,v=pcall(function()return H:JSONDecode(readfile(path..suffix))end)
+   if ok and type(v)=='table'and v.version==1 and v.userId==P.UserId
+    and (v.mode=='Manual'or v.mode=='Auto')and type(v.choices)=='table'then
+    -- Hold native equip until the Unit controller has loaded the saved manual plan.
+    E.FyrelithUnitChoice={mode=v.mode,choices=v.choices}
+    break
+   end
+  end
+ end
+end
 do
  local E=getgenv()
  local guard={tickets={},saved={},serial=0,nextId=0}
@@ -73,7 +91,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-07-xp-starter-once-35'
+getgenv().FyrelithBuild='2026-11-08-unit-manual-36'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -150,7 +168,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-07-xp-starter-once-35'}
+local M={build='2026-11-08-unit-manual-36'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -962,7 +980,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-07-xp-starter-once-35'
+ local E=getgenv()local expected='2026-11-08-unit-manual-36'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -1635,6 +1653,19 @@ return function(deps)
                 or type(profile.equipped_units) ~= "table" or type(slots) ~= "table" or #slots == 0 then
                 return false, "WAITING_FOR_PROFILE"
             end
+            -- Reconcile current truth before an old request can block progress.
+            local valid, wanted = validPlan(plan, profile, #slots)
+            if not valid then return false, "INVALID_OR_STALE_PLAN" end
+            if deps.matches(profile, plan) then
+                self.pending = nil self.attempts = {} self.retryAt = 0
+                return true, "CONFIRMED"
+            end
+            -- send() has returned before another tick can enter (busy remains true).
+            -- A UUID removed from the desired plan must not own the new plan forever.
+            if self.pending and not wanted[self.pending.uuid] then
+                self.attempts[self.pending.uuid] = nil
+                self.pending = nil
+            end
             if self.pending then
                 local equipped = false
                 for _, uuid in pairs(profile.equipped_units) do
@@ -1647,18 +1678,20 @@ return function(deps)
                     local age=deps.clock()-self.pending.started
                     local attempts=self.attempts[self.pending.uuid] or self.pending.attempt or 1
                     -- Opt-in only for the free, idempotent Equip endpoint; never purchases.
-                    if type(deps.idempotentRetryAfter)=="number" and not self.pending.error
+                    if type(deps.idempotentRetryAfter)=="number"
                         and age>=deps.idempotentRetryAfter and attempts<(deps.maxAttempts or 2) then
                         self.attempts[self.pending.uuid]=attempts
                         self.pending=nil
                     else
+                        if self.pending.error then return false, "REQUEST_OUTCOME_UNKNOWN" end
+                        if type(deps.idempotentRetryAfter)=="number"
+                            and age>=deps.idempotentRetryAfter and attempts>=(deps.maxAttempts or 2) then
+                            return false, "EQUIP_RETRY_EXHAUSTED"
+                        end
                         return false, age>=2 and "WAITING_FOR_REPLICATION" or "PENDING"
                     end
                 end
             end
-            local valid, wanted = validPlan(plan, profile, #slots)
-            if not valid then return false, "INVALID_OR_STALE_PLAN" end
-            if deps.matches(profile, plan) then return true, "CONFIRMED" end
             if deps.clock() < self.retryAt then return false, "RETRY_BACKOFF" end
             local current = {}
             for _, uuid in pairs(profile.equipped_units) do current[uuid] = true end
@@ -1679,7 +1712,7 @@ return function(deps)
             if sent and reply == false then self.pending = nil self.retryAt = math.max(self.retryAt,deps.clock() + 1) end
             if not self.enabled or generation ~= self.generation then return false, "STOPPED_DURING_REQUEST" end
             if not sent then
-                self.pending.error = tostring(reply)
+                if self.pending then self.pending.error = tostring(reply) end
                 return false, "REQUEST_OUTCOME_UNKNOWN"
             end
             if reply == false then
@@ -7138,7 +7171,11 @@ local function liveAuditEvent(kind,details)
     audit.pending=liveEquipController and liveEquipController.pending
     writefile(file,H:JSONEncode(audit))
 end
+S.fyrelithUnitSlots=liveUnlockedSlots
 local function equipInventoryTeam(plan,fillOnly)
+    local u=getgenv().FyrelithUnitChoice
+    if u and u.mode=='Manual'then if u.step then return u.step()end return false end
+
     if not S.autoTeam and not fillOnly then return true end
     if not Loader.IsLobby or not S.alive or S.teamEquipBusy or S.developmentBusy or not plan then return false end
     if not liveEquipController then
@@ -7214,6 +7251,9 @@ function S.requestBestTeam(reason,explicit)
 end
 -- Final navigation check uses a newly computed plan, never a previous CONFIRMED flag.
 function S.validateFreshBestTeam()
+    local u=getgenv().FyrelithUnitChoice
+    if u and u.mode=='Manual'then if u.validate then return u.validate()end return false,'Manual team loading' end
+
     if not S.autoTeam then
         local profile=S.collectionProfile() local count=0 local attacker=false
         for _,uuid in pairs(profile and profile.equipped_units or {}) do
@@ -7233,6 +7273,9 @@ function S.validateFreshBestTeam()
     return true,plan
 end
 function S.confirmBestTeamAfterSummon()
+    local u=getgenv().FyrelithUnitChoice
+    if u and u.mode=='Manual'then if u.step then return u.step()end return false end
+
     if not Loader.IsLobby or S.teamEquipBusy or S.developmentBusy then return false end
     if not S.autoTeam then return S.validateFreshBestTeam() end
     S.inventoryPlanCache=nil
@@ -7245,6 +7288,9 @@ function S.confirmBestTeamAfterSummon()
 end
 -- FYRELITH_LOBBY_FILL_EMPTY_V1: keep manual selections; fill only vacant unlocked slots.
 function S.lobbyFillPlan()
+    local u=getgenv().FyrelithUnitChoice
+    if u and u.mode=='Manual'then return nil end
+
     local profile=S.collectionProfile()
     local ss=session()
     local capacity,slots=liveUnlockedSlots(ss)
@@ -7272,6 +7318,9 @@ function S.lobbyFillPlan()
     return {team=team,primary=best.primary,farm=best.farm,slots=capacity,fillOnly=true}
 end
 function S.autoEquipBestTick()
+    local u=getgenv().FyrelithUnitChoice
+    if u and u.mode=='Manual'then if u.step then u.step()end return end
+
     if not S.instanceGuard or not Loader.IsLobby then return end
     if S.bestTeamLobbyJob~=game.JobId then
         S.bestTeamLobbyJob=game.JobId S.requestBestTeam("Lobby arrival")
@@ -13804,6 +13853,455 @@ do
 end
 
 -- FYRELITH_STABILITY_COMPLETE_2026_10_30
+
+getgenv().FyrelithBoot.run('FYRELITH_UNIT_UI_V1',function()
+-- FYRELITH_UNIT_UI_V1_BEGIN
+do
+ local E=getgenv()
+ local S=assert(E.AASmartPlacement,'Fyrelith controller is not ready')
+ local center=assert(E.AAFyrelithCenter,'Fyrelith window is not ready')
+ local P=game:GetService('Players').LocalPlayer
+ local H=game:GetService('HttpService')
+ local Loader=require(game.ReplicatedStorage.src.Loader)
+ local Settings=require(game.ReplicatedStorage.src.Data.GameplaySettings)
+ local policy=(function()
+-- Pure policy. Inventory is never modified by this module.
+local P={}
+function P.validate(choices,profile,slots,defs,isCombat)
+ if type(choices)~='table' or type(profile)~='table' or type(profile.owned_units)~='table' then return false,'Inventory not ready' end
+ local allowed={} for _,slot in ipairs(slots or {})do allowed[slot]=true end
+ local uuids,ids={},{} local count,combat=0,false
+ for slot,uuid in pairs(choices)do
+  if not allowed[slot]then return false,'Selected slot is locked' end
+  local own=type(uuid)=='string' and profile.owned_units[uuid]
+  local def=own and defs[own.unit_id]
+  if not own or not def or def._temporary then return false,'Selected unit is missing; choose a replacement' end
+  if uuids[uuid] or ids[own.unit_id]then return false,'Each character can be selected once' end
+  uuids[uuid]=true ids[own.unit_id]=true count+=1
+  if isCombat(own.unit_id) then combat=true end
+ end
+ if count==0 then return false,'Choose at least one unit' end
+ if not combat then return false,'Choose at least one attacking unit' end
+ return true
+end
+function P.matches(choices,profile,slots)
+ if type(profile)~='table'or type(profile.equipped_units)~='table'then return false end
+ for _,slot in ipairs(slots)do
+  local current=profile.equipped_units[slot]
+  if current==false or current==''then current=nil end
+  if current~=choices[slot]then return false end
+ end
+ return true
+end
+function P.nextAction(choices,profile,slots)
+ -- Clear only unwanted/incorrect slots first. This also makes slot swaps possible.
+ for _,slot in ipairs(slots)do
+  local current=profile.equipped_units[slot]
+  if type(current)=='string'and current~=''and current~=choices[slot]then
+   return {kind='unequip',uuid=current,slot=slot}
+  end
+ end
+ for _,slot in ipairs(slots)do
+  if choices[slot]and profile.equipped_units[slot]~=choices[slot]then
+   return {kind='equip',uuid=choices[slot],slot=slot}
+  end
+ end
+ return nil
+end
+function P.actionConfirmed(action,profile)
+ if not action or not profile or type(profile.equipped_units)~='table'then return false end
+ if action.kind=='equip'then return profile.equipped_units[action.slot]==action.uuid end
+ for _,uuid in pairs(profile.equipped_units)do if uuid==action.uuid then return false end end
+ return true
+end
+function P.assign(draft,slot,uuid,owned)
+ local out=table.clone(draft)
+ local row=owned[uuid]
+ if not row then return nil,'Unit is no longer in inventory' end
+ for key,id in pairs(out)do
+  local other=owned[id]
+  if id==uuid or other and other.unit_id==row.unit_id then out[key]=nil end
+ end
+ out[slot]=uuid
+ return out
+end
+return P
+
+ end)()
+ local previous=E.FyrelithUnitChoice
+ if previous and previous.close then previous.close() end
+ local K={alive=true,mode='Auto',choices={},draft={},draftMode='Auto',slot='1',connections={},allowed={},page=1,status='Choose a mode and team, then Apply.'}
+ E.FyrelithUnitChoice=K
+ local file=E.FyrelithBoot.accountPath('unit-selection.json')
+ local ok,saved=pcall(E.FyrelithBoot.readJSON,file)
+ if ok and type(saved)=='table'and saved.version==1 and saved.userId==P.UserId
+  and (saved.mode=='Auto'or saved.mode=='Manual')and type(saved.choices)=='table'then
+  K.mode=saved.mode K.choices=table.clone(saved.choices)
+ end
+ K.draft=table.clone(K.choices) K.draftMode=K.mode
+ local defs
+ local getups=debug.getupvalues or getupvalues
+ for _,v in pairs(getups(S.unitPotential))do
+  if type(v)=='table'and type(v.sasuke)=='table'and type(v.speedwagon)=='table'then defs=v break end
+ end
+ assert(defs,'Unit definitions not ready')
+ local nativeSlots=S.fyrelithUnitSlots
+ if not nativeSlots and type(debug.info)=='function'then
+  for _,v in pairs(getups(S.lobbyFillPlan))do
+   if type(v)=='function'and debug.info(v,'n')=='liveUnlockedSlots'then nativeSlots=v break end
+  end
+ end
+ local collection=Loader.load_client_service(script,'UnitCollectionServiceClient')
+ local endpoints=game.ReplicatedStorage.endpoints.client_to_server
+ local function read()
+  local ss=collection.session
+  local profile=ss and ss.collection and ss.collection.collection_profile_data
+  if nativeSlots then
+   local capacity,slots=nativeSlots(ss)
+   return profile,type(capacity)=='number'and type(slots)=='table'and slots or {},ss
+  end
+  local levelData=ss and ss.profile_data and ss.profile_data.level_data
+  local level=type(levelData)=='table'and (tonumber(levelData.level)or tonumber(levelData.player_level))or tonumber(levelData)
+  local slots={}
+  for _,slot in ipairs(Settings.UNIT_SLOTS)do
+   local required=Settings.UNIT_SLOT_REQUIREMENT[slot]
+   if type(required)=='number'and (required==0 or level and level>=required)then slots[#slots+1]=slot end
+  end
+  return profile,slots,ss
+ end
+ if K.mode=='Auto'and next(K.draft)==nil then
+  local profile,slots=read()
+  for _,slot in ipairs(slots)do
+   local uuid=profile and profile.equipped_units and profile.equipped_units[slot]
+   if type(uuid)=='string'and uuid~=''then K.draft[slot]=uuid end
+  end
+ end
+ local function cloneChoices(value)local out={}for k,v in pairs(value)do out[k]=v end return out end
+ local function persist(mode,choices)
+  local value={version=1,userId=P.UserId,mode=mode,choices=choices}
+  local done,why=pcall(E.FyrelithBoot.write,file,H:JSONEncode(value))
+  if not done then return false,tostring(why)end
+  return true
+ end
+ local oldInvoke=E.AAInvokeConnected
+ local guardedInvoke
+ guardedInvoke=function(remote,...)
+  if K.alive and K.mode=='Manual'and remote and (remote.Name=='equip_unit'or remote.Name=='unequip_unit')
+   and not K.allowed[coroutine.running()]then
+   return false
+  end
+  return oldInvoke(remote,...)
+ end
+ E.AAInvokeConnected=guardedInvoke
+ local old={}
+ for _,key in ipairs({'autoEquipBestTick','validateFreshBestTeam','confirmBestTeamAfterSummon','lobbyFillPlan','requestBestTeam'})do old[key]=S[key]end
+ local static=type(filtergc)=='function'and filtergc('function',{Name='calculate_static_stat_multiplier'},true)or nil
+ local levelFn=type(filtergc)=='function'and filtergc('function',{Name='calculate_level',Constants={'log','floor'}},true)or nil
+ function K.buildPlan(profile,slots,ss)
+  local team,attacks={},{} local primary,air,farm
+  local function better(a,b)
+   if not b then return true end
+   if S.betterPotential then return S.betterPotential(a,b)end
+   return (a.potential or a.dps or 0)>(b.potential or b.dps or 0)
+  end
+  for _,slot in ipairs(slots)do
+   local uuid=K.choices[slot]local own=uuid and profile.owned_units[uuid]
+   local d=own and defs[own.unit_id]
+   if d then
+    local function mult(key)
+     if not static then return 1 end
+     local ok,value=pcall(static,own,own.xp or 0,key,ss)
+     return ok and tonumber(value)or 1
+    end
+    local stage=type(d.upgrade)=='table'and d.upgrade[#d.upgrade]or d
+    local farmMult=mult('farm_amount')
+    local row={uuid=uuid,id=own.unit_id,slot=slot,xp=own.xp,cost=d.cost or math.huge,
+     attack=(d.damage or 0)*mult('damage'),maxAttack=(stage.damage or d.damage or 0)*mult('damage'),
+     dps=(stage.damage or d.damage or 0)*mult('damage')/math.max((stage.attack_cooldown or d.attack_cooldown or 1)*mult('attack_cooldown'),.1),
+     farm=(d.farm_amount or 0)*farmMult,air=(d.hill_unit or d.hybrid_placement)==true}
+    local scored,value=pcall(S.unitPotential,uuid,own,ss)
+    if scored and type(value)=='table'then for key,v in pairs(value)do row[key]=v end row.level=value.referenceLevel end
+    row.farmPeak=E.FyrelithFarmPolicy and E.FyrelithFarmPolicy.peak(d,farmMult)or row.farm
+    team[#team+1]=row
+    if (S.isDevelopmentFarm and S.isDevelopmentFarm(d))or row.farmPeak>0 then
+     if not farm or (E.FyrelithFarmPolicy and E.FyrelithFarmPolicy.better(row,farm))or (not E.FyrelithFarmPolicy and row.farmPeak>farm.farmPeak)then farm=row end
+    elseif row.attack>0 then
+     attacks[#attacks+1]=row
+     if better(row,primary)then primary=row end
+     if row.air and better(row,air)then air=row end
+    end
+   end
+  end
+  table.sort(team,better)
+  local opener,decision
+  if S.chooseOpeningSupport then opener,decision=S.chooseOpeningSupport(attacks,team)end
+  return {team=team,primary=primary,air=air,farm=farm,opener=opener,openingDecision=decision,
+   manual=true,slots=#slots,estimated=true,inventoryTypes=#attacks}
+ end
+ function K.validate()
+  local profile,slots,ss=read()
+  local valid,why=policy.validate(K.choices,profile,slots,defs,S.isDirectCombatId)
+  if not valid then return false,why end
+  if not policy.matches(K.choices,profile,slots)then return false,'Waiting for your selected team' end
+  return true,K.buildPlan(profile,slots,ss)
+ end
+ function K.step()
+  if not K.alive or K.mode~='Manual'then return false end
+  if K.busy then return false end
+  if not Loader.IsLobby then K.status='Saved. Your team will apply in the lobby.' return false end
+  if not S.alive or not S.instanceGuard or E.AAKaiTunPaused or S.kaiTunPaused then K.status='Saved. Waiting for automation to resume.' return false end
+  if S.teamEquipBusy or S.developmentBusy or E.AASummonPurchaseOwner then K.status='Waiting for the current operation to finish.' return false end
+  if S.starterSummon and S.starterSummon.active and S.starterSummon.phase~='FIRST_RUN'and S.starterSummon.phase~='SECOND_RUN'then
+   K.status='Saved. Waiting for starter setup to finish.' return false
+  end
+  local profile,slots=read()
+  local valid,why=policy.validate(K.choices,profile,slots,defs,S.isDirectCombatId)
+  if not valid then K.status=why return false end
+  if policy.matches(K.choices,profile,slots)then
+   K.pending=nil K.status='Manual team confirmed. Empty slots stay empty.'
+   S.bestTeamEquipPending=false
+   local _,plan=K.validate() S.inventoryTeam=plan
+   return true
+  end
+  local now=os.clock()
+  if K.pending then
+   if policy.actionConfirmed(K.pending.action,profile)then K.pending=nil
+   elseif now-K.pending.at<3 then K.status='Waiting for team confirmation...' return false
+   elseif K.pending.attempt>=2 then K.status='Could not confirm team. Check the connection, then Apply to retry.' return false
+   end
+  end
+  if now<(K.nextAt or 0)then return false end
+  local action=K.pending and K.pending.action or policy.nextAction(K.choices,profile,slots)
+  if not action then return false end
+  local attempt=K.pending and K.pending.attempt+1 or 1
+  K.pending={action=action,at=now,attempt=attempt}K.nextAt=now+1.25
+  K.busy=true
+  local thread=coroutine.running() K.allowed[thread]=true
+  local sent,reply=pcall(function()
+   if action.kind=='equip'then return E.AAInvokeConnected(endpoints.equip_unit,action.uuid,action.slot)end
+   return E.AAInvokeConnected(endpoints.unequip_unit,action.uuid)
+  end)
+  K.allowed[thread]=nil K.busy=false
+  if not sent then K.status='Team request failed; checking the current team.'
+  elseif reply==false then K.status='Team request rejected; checking the current team.'
+  else K.status='Applying selected team...'end
+  return false
+ end
+ S.autoEquipBestTick=function(...)if K.mode=='Manual'then return K.step()end return old.autoEquipBestTick(...)end
+ S.validateFreshBestTeam=function(...)if K.mode=='Manual'then return K.validate()end return old.validateFreshBestTeam(...)end
+ S.confirmBestTeamAfterSummon=function(...)if K.mode=='Manual'then return K.step()end return old.confirmBestTeamAfterSummon(...)end
+ S.lobbyFillPlan=function(...)if K.mode=='Manual'then return nil end return old.lobbyFillPlan(...)end
+ S.requestBestTeam=function(...)if K.mode=='Manual'then return false end return old.requestBestTeam(...)end
+ if K.mode=='Manual'then S.autoTeam=false end
+ local w=center.window
+ local page=Instance.new('Frame')page.Name='UnitPage'page.Position=UDim2.fromOffset(20,66)page.Size=UDim2.fromOffset(720,408)
+ page.BackgroundColor3=Color3.fromRGB(17,12,26)page.BorderSizePixel=0 page.Visible=false page.Active=true page.ZIndex=20 page.Parent=w
+ K.root=page
+ local function rounded(v,n)local c=Instance.new('UICorner')c.CornerRadius=UDim.new(0,n or 10)c.Parent=v end
+ rounded(page,12)
+ local stroke=Instance.new('UIStroke')stroke.Color=Color3.fromRGB(100,66,126)stroke.Transparency=.35 stroke.Parent=page
+ local function connect(signal,fn)local c=signal:Connect(fn)K.connections[#K.connections+1]=c return c end
+ local function text(parent,name,value,x,y,width,height,size)
+  local l=Instance.new('TextLabel')l.Name=name l.Text=value l.Font=Enum.Font.Gotham l.TextSize=size or 13
+  l.TextColor3=Color3.fromRGB(220,208,234)l.BackgroundTransparency=1 l.TextXAlignment=Enum.TextXAlignment.Left
+  l.Position=UDim2.fromOffset(x,y)l.Size=UDim2.fromOffset(width,height)l.ZIndex=parent.ZIndex+1 l.Parent=parent return l
+ end
+ local function button(parent,name,value,x,y,width,height,fn,primary)
+  local b=Instance.new('TextButton')b.Name=name b.Text=value b.Font=Enum.Font.GothamMedium b.TextSize=13
+  b.BackgroundColor3=primary and Color3.fromRGB(205,153,240)or Color3.fromRGB(37,27,49)
+  b.TextColor3=primary and Color3.fromRGB(26,13,35)or Color3.fromRGB(231,217,242)b.BorderSizePixel=0
+  b.Position=UDim2.fromOffset(x,y)b.Size=UDim2.fromOffset(width,height)b.ZIndex=parent.ZIndex+1 b.Parent=parent rounded(b,9)
+  connect(b.Activated,function()local good,err=pcall(fn)if not good then K.status='Error: '..tostring(err):sub(1,160)end end)
+  return b
+ end
+ text(page,'Title','Unit',16,10,200,28,23)
+ text(page,'Hint','Choose the exact copies you want. Changes take effect after Apply.',16,41,688,18,12)
+ local refresh
+ local auto=button(page,'Auto','Auto',16,67,92,30,function()K.draftMode='Auto'K.dirty=true refresh()end)
+ local manual=button(page,'Manual','Manual',116,67,92,30,function()K.draftMode='Manual'K.dirty=true refresh()end)
+ local modeLabel=text(page,'Mode','',224,67,480,30,12)
+ local slotButtons={}
+ local inventory=Instance.new('ScrollingFrame')inventory.Name='Inventory'inventory.Position=UDim2.fromOffset(16,218)inventory.Size=UDim2.fromOffset(688,126)
+ inventory.BackgroundTransparency=1 inventory.BorderSizePixel=0 inventory.ScrollBarThickness=4 inventory.ScrollBarImageColor3=Color3.fromRGB(195,143,230)
+ inventory.CanvasSize=UDim2.new()inventory.ZIndex=21 inventory.Parent=page
+ local search=Instance.new('TextBox')search.Name='Search'search.PlaceholderText='Search owned units by name, rarity, or ID...'search.Text=''search.ClearTextOnFocus=false
+ search.TextSize=13 search.Font=Enum.Font.Gotham search.TextColor3=Color3.fromRGB(235,224,244)search.PlaceholderColor3=Color3.fromRGB(157,139,173)
+ search.BackgroundColor3=Color3.fromRGB(31,23,41)search.BorderSizePixel=0 search.Position=UDim2.fromOffset(16,178)search.Size=UDim2.fromOffset(542,30)search.ZIndex=21 search.Parent=page rounded(search,8)
+ local countLabel=text(page,'Count','',568,178,136,30,12)
+ local status=text(page,'Status','',16,349,688,21,11)status.TextTruncate=Enum.TextTruncate.AtEnd
+ local function unitLevel(uuid,own,ss)
+  K.levelCache=K.levelCache or {}
+  local key=tostring(own.unit_id)..':'..tostring(own.xp)
+  local prior=K.levelCache[uuid]
+  if prior and prior.key==key then return prior.level end
+  if levelFn then
+   local good,value=pcall(levelFn,own.unit_id,own.xp or 0)
+   if good and type(value)=='number'then K.levelCache[uuid]={key=key,level=value}return value end
+  end
+  local good,value=pcall(S.unitPotential,uuid,own,ss)
+  local level=good and type(value)=='table'and value.referenceLevel or '?'
+  K.levelCache[uuid]={key=key,level=level}return level
+ end
+ local function inventoryRows(profile,ss)
+  local rows={}local query=search.Text:lower()
+  for uuid,own in pairs(profile and profile.owned_units or {})do
+   local d=defs[own.unit_id]
+   if d and not d._temporary then
+    local name=tostring(d.name or own.unit_id)
+    if query==''or (name..' '..own.unit_id..' '..tostring(d.rarity)):lower():find(query,1,true)then
+     rows[#rows+1]={uuid=uuid,own=own,def=d,name=name,level=unitLevel(uuid,own,ss)}
+    end
+   end
+  end
+  table.sort(rows,function(a,b)if a.name~=b.name then return a.name<b.name end if a.level~=b.level then return (tonumber(a.level)or 0)>(tonumber(b.level)or 0)end return a.uuid<b.uuid end)
+  return rows
+ end
+ local function renderInventory(profile,ss)
+  -- Connections on destroyed rows are disconnected instead of accumulating on refresh.
+  if K.rowConnections then for _,c in ipairs(K.rowConnections)do c:Disconnect()end end K.rowConnections={}
+  for _,child in ipairs(inventory:GetChildren())do child:Destroy()end
+  local rows=inventoryRows(profile,ss)
+  local pages=math.max(1,math.ceil(#rows/60))K.page=math.clamp(K.page,1,pages)
+  countLabel.Text=tostring(#rows)..' units | '..K.page..'/'..pages
+  local first=(K.page-1)*60+1 local last=math.min(#rows,first+59)
+  for i=first,last do
+   local row=rows[i]local n=i-first local x=(n%2)*342 local y=math.floor(n/2)*52
+   local selectedSlot
+   for slot,uuid in pairs(K.draft)do if uuid==row.uuid then selectedSlot=slot break end end
+   local equipped=false for _,uuid in pairs(profile.equipped_units or {})do if uuid==row.uuid then equipped=true break end end
+   local b=Instance.new('TextButton')b.Name='OwnedUnit_'..i b.Text=''b.BackgroundColor3=selectedSlot and Color3.fromRGB(70,43,90)or Color3.fromRGB(31,24,41)
+   b.BorderSizePixel=0 b.Position=UDim2.fromOffset(x,y)b.Size=UDim2.fromOffset(334,46)b.ZIndex=22 b.Parent=inventory rounded(b,8)
+   local title=text(b,'Name',row.name..(row.own.shiny and '  [Shiny]'or ''),10,3,310,20,13)title.TextTruncate=Enum.TextTruncate.AtEnd
+   text(b,'Details','Lv.'..tostring(row.level)..'  '..tostring(row.def.rarity or '')..(selectedSlot and '  | Slot '..selectedSlot or equipped and '  | Equipped'or ''),10,24,310,17,10)
+   K.rowConnections[#K.rowConnections+1]=b.Activated:Connect(function()
+    if K.draftMode~='Manual'then K.status='Select Manual to choose units.'return end
+    local fresh=read()if not fresh then return end
+    local updated,why=policy.assign(K.draft,K.slot,row.uuid,fresh.owned_units)
+    if not updated then K.status=why return end
+    K.draft=updated K.dirty=true K.status='Slot '..K.slot..' selected. Press Apply when ready.'refresh()
+   end)
+  end
+  inventory.CanvasSize=UDim2.fromOffset(0,math.ceil((last-first+1)/2)*52)
+ end
+ refresh=function()
+  local profile,slots,ss=read()
+  local unlocked={}for _,slot in ipairs(slots)do unlocked[slot]=true end
+  auto.BackgroundColor3=K.draftMode=='Auto'and Color3.fromRGB(205,153,240)or Color3.fromRGB(37,27,49)
+  auto.TextColor3=K.draftMode=='Auto'and Color3.fromRGB(26,13,35)or Color3.fromRGB(231,217,242)
+  manual.BackgroundColor3=K.draftMode=='Manual'and Color3.fromRGB(205,153,240)or Color3.fromRGB(37,27,49)
+  manual.TextColor3=K.draftMode=='Manual'and Color3.fromRGB(26,13,35)or Color3.fromRGB(231,217,242)
+  modeLabel.Text='Active: '..K.mode..(K.dirty and '  |  Unsaved changes'or '')
+  for _,row in ipairs(slotButtons)do
+   local uuid=K.draft[row.slot]local own=profile and profile.owned_units[uuid]local d=own and defs[own.unit_id]
+   row.button.Text='Slot '..row.slot..'\n'..(not unlocked[row.slot]and 'Locked'or d and tostring(d.name or own.unit_id)or uuid and 'Missing unit'or 'Empty')
+   row.button.BackgroundColor3=row.slot==K.slot and Color3.fromRGB(79,48,103)or Color3.fromRGB(33,24,45)
+   row.button.TextTransparency=unlocked[row.slot]and 0 or .5 row.clear.Visible=uuid~=nil
+  end
+  renderInventory(profile,ss)
+ end
+ for index,slot in ipairs(Settings.UNIT_SLOTS)do
+  if index>6 then break end
+  local b=button(page,'Slot'..slot,'',16+(index-1)*116,106,108,61,function()
+   local _,slots=read()if not table.find(slots,slot)then K.status='This slot is locked.'return end
+   K.slot=slot K.draftMode='Manual'refresh()
+  end)
+  b.TextSize=11 b.TextWrapped=true
+  local clear=button(b,'Clear','x',88,2,18,18,function()K.draft[slot]=nil K.dirty=true K.draftMode='Manual'refresh()end)
+  clear.TextSize=10
+  slotButtons[#slotButtons+1]={button=b,clear=clear,slot=slot}
+ end
+ button(page,'UseCurrent','Use current team',16,376,154,27,function()
+  local profile,slots=read()if not profile then return end K.draft={}
+  for _,slot in ipairs(slots)do local uuid=profile.equipped_units[slot]if type(uuid)=='string'and uuid~=''then K.draft[slot]=uuid end end
+  K.draftMode='Manual'K.dirty=true K.status='Current team copied. Press Apply to save.'refresh()
+ end)
+ button(page,'Refresh','Refresh',180,376,82,27,function()refresh()end)
+ button(page,'ClearAll','Clear',272,376,70,27,function()K.draft={}K.draftMode='Manual'K.dirty=true refresh()end)
+ button(page,'Previous','<',354,376,34,27,function()K.page-=1 refresh()end)
+ button(page,'Next','>',394,376,34,27,function()K.page+=1 refresh()end)
+ function K.applyDraft()
+  if K.busy or S.teamEquipBusy then return false,'Wait for the current team request to finish.'end
+  local profile,slots=read()
+  if K.draftMode=='Manual'then
+   local valid,why=policy.validate(K.draft,profile,slots,defs,S.isDirectCombatId)
+   if not valid then return false,why end
+  end
+  local choices=cloneChoices(K.draft)
+  local stored,why=persist(K.draftMode,choices)if not stored then return false,'Could not save team: '..tostring(why)end
+  K.mode=K.draftMode K.choices=choices K.pending=nil K.nextAt=0 K.dirty=false
+  S.autoTeam=K.mode=='Auto'S.bestTeamEquipPending=false
+  local settingsOK=S.saveSettings()
+  if K.mode=='Auto'then old.requestBestTeam('Unit tab: Auto selected',true)end
+  K.status=not settingsOK and 'Team saved; general settings could not be saved.'or K.mode=='Auto'and 'Auto team enabled.'or 'Manual team saved. Applying in the lobby.'
+  refresh()return true
+ end
+ button(page,'Apply','Apply team',536,376,168,27,function()local applied,why=K.applyDraft()if not applied then K.status=why end end,true)
+ connect(search:GetPropertyChangedSignal('Text'),function()K.page=1 refresh()end)
+ local originalOpen=center.openPage
+ local wrappedOpen
+ wrappedOpen=function(name,...)
+  page.Visible=false
+  if name=='unit'then
+   originalOpen('home')
+   local inline=E.AAInlineSummon
+   local summonRoot=inline and inline.root and inline.root()
+   if summonRoot then summonRoot.Visible=false end
+   local summonNotice=w:FindFirstChild('SummonLoadStatus')if summonNotice then summonNotice.Visible=false end
+   for _,key in ipairs({'LiveStatus','RuntimeCard','WalletCard','KaiTun','PreviewFooter','WebhookPage','ConfigPage'})do
+    local content=w:FindFirstChild(key)if content then content.Visible=false end
+   end
+   if center.dex then center.dex.Visible=false end
+   page.Visible=true center.page='unit'refresh()
+   return
+  end
+  return originalOpen(name,...)
+ end
+ center.openPage=wrappedOpen
+ local nav=button(w,'UnitNavigation','Unit',390,13,54,32,function()center.openPage('unit')end,true)
+ nav.ZIndex=40 nav.BackgroundTransparency=1
+ local navigation={{'OverviewNavigation',304,82},{'UnitNavigation',390,54},{'SummonNavigation',448,102},{'Webhook',554,90},{'Config',648,80}}
+ local originalNav={}
+ for _,spec in ipairs(navigation)do
+  local b=w:FindFirstChild(spec[1])
+  if b then
+   if b~=nav then originalNav[b]={Position=b.Position,Size=b.Size,TextSize=b.TextSize}end
+   b.Position=UDim2.fromOffset(spec[2],13)b.Size=UDim2.fromOffset(spec[3],32)b.TextSize=13
+   if b~=nav then connect(b.Activated,function()page.Visible=false nav.BackgroundTransparency=1 end)end
+  end
+ end
+ connect(page:GetPropertyChangedSignal('Visible'),function()
+  nav.BackgroundTransparency=page.Visible and 0 or 1
+  if page.Visible then for _,spec in ipairs(navigation)do local b=w:FindFirstChild(spec[1])if b and b~=nav then b.BackgroundTransparency=1 end end end
+ end)
+ function K.close()
+  K.alive=false
+  for _,c in ipairs(K.connections)do c:Disconnect()end
+  for _,c in ipairs(K.rowConnections or {})do c:Disconnect()end
+  if E.AAInvokeConnected==guardedInvoke then E.AAInvokeConnected=oldInvoke end
+  if center.openPage==wrappedOpen then center.openPage=originalOpen end
+  for key,fn in pairs(old)do S[key]=fn end
+  for b,properties in pairs(originalNav)do if b.Parent then for key,value in pairs(properties)do b[key]=value end end end
+  page:Destroy()nav:Destroy()
+ end
+ K.policy=policy K.read=read K.refresh=refresh K.ready=true
+ refresh()
+ task.spawn(function()
+  local nextRefresh=0
+  while K.alive and S.alive and page.Parent do
+   local good,err=pcall(function()
+    if K.mode=='Manual'then K.step()end
+    status.Text=K.status
+    if page.Visible and os.clock()>=nextRefresh then nextRefresh=os.clock()+5 refresh()end
+   end)
+   if not good then K.status='Unit: '..tostring(err):sub(1,160)end
+   task.wait(1)
+  end
+ end)
+end
+-- FYRELITH_UNIT_UI_V1_END
+
+ return true
+end)
 ]========================================]
 E.AASmartPlacementSource=source
 local fn,err=loadstring(source) assert(fn,err)
