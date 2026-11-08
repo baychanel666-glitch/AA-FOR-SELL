@@ -91,7 +91,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-08-unit-manual-36'
+getgenv().FyrelithBuild='2026-11-08-manual-match-fastpass-39'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -168,7 +168,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-08-unit-manual-36'}
+local M={build='2026-11-08-manual-match-fastpass-39'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -980,7 +980,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-08-unit-manual-36'
+ local E=getgenv()local expected='2026-11-08-manual-match-fastpass-39'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -6430,7 +6430,11 @@ local function navigationBlockReason()
     end
     return nil
 end
+-- FYRELITH_UNIT_MANUAL_NAV_GATE_V1
 function S.lobbyNavigationGate()
+    local u=getgenv().FyrelithUnitChoice
+    if u and u.mode=='Manual'then if u.navigationGate then return u.navigationGate()end return 'Manual team loading' end
+
     local reason=navigationBlockReason()
     S.navigationBlockReason=reason
     return reason
@@ -7138,7 +7142,10 @@ local function liveUnlockedSlots(ss)
     S.equipSlotCapacity=#slots
     return #slots,slots
 end
+-- FYRELITH_UNIT_MANUAL_PLANNER_V1
 local function chooseInventoryTeam()
+    local u=getgenv().FyrelithUnitChoice
+    if u and u.mode=='Manual'then return u.selectedPlan and u.selectedPlan()or nil end
     if not liveTeamPlanner then
         liveTeamPlanner=E.AALiveAuditModules.plan({session=session,capacity=liveUnlockedSlots,
             definitions=defs,clock=os.clock,lookup=cachedLookup,potential=S.unitPotential,
@@ -7845,7 +7852,7 @@ local function arcLobbyTick(directInfinite)
     S.inventoryTeam=plan S.arcGoal=goal
     if not goal then status.Text=directInfinite and (S.infiniteStatus or "Waiting for an unlocked Infinite map") or "Story complete / selected stage locked / progression data loading" return end
     if goal.infinite and not S.prepareSummonLobbyRewards() then status.Text=S.summonRewardStatus or "Claiming rewards before Infinite" return end
-    if not plan or not plan.primary or #plan.team<(S.autoFarmXP and 1 or 2) then
+    if not plan or not plan.primary or #plan.team<((S.autoFarmXP or plan.manual) and 1 or 2) then
         S.lobbyPhase="Waiting for usable inventory"
         status.Text="Auto Arc: need at least 2 usable units including an attacker" return
     end
@@ -7869,7 +7876,7 @@ local function arcLobbyTick(directInfinite)
         plan=chooseInventoryTeam()
         S.inventoryTeam=plan
         if not active() then return end
-        if not plan or not plan.primary or #plan.team<(S.autoFarmXP and 1 or 2) then
+        if not plan or not plan.primary or #plan.team<((S.autoFarmXP or plan.manual) and 1 or 2) then
             status.Text="Waiting for a usable team for "..finalFarmMode return
         end
         if not equipInventoryTeam(plan) then
@@ -13925,6 +13932,21 @@ function P.assign(draft,slot,uuid,owned)
  out[slot]=uuid
  return out
 end
+function P.drop(draft,slot,uuid,sourceSlot,owned,slots)
+ if not table.find(slots,slot)then return nil,'This slot is locked' end
+ local out,why=P.assign(draft,slot,uuid,owned)
+ if not out then return nil,why end
+ if sourceSlot and sourceSlot~=slot and draft[sourceSlot]==uuid then
+  out[sourceSlot]=draft[slot]
+ end
+ return out
+end
+function P.hitSlot(point,rectangles)
+ for _,r in ipairs(rectangles)do
+  if point.X>=r.x and point.X<=r.x+r.w and point.Y>=r.y and point.Y<=r.y+r.h then return r.slot end
+ end
+ return nil
+end
 return P
 
  end)()
@@ -13994,7 +14016,7 @@ return P
  end
  E.AAInvokeConnected=guardedInvoke
  local old={}
- for _,key in ipairs({'autoEquipBestTick','validateFreshBestTeam','confirmBestTeamAfterSummon','lobbyFillPlan','requestBestTeam'})do old[key]=S[key]end
+ for _,key in ipairs({'autoEquipBestTick','validateFreshBestTeam','confirmBestTeamAfterSummon','lobbyFillPlan','requestBestTeam','lobbyNavigationGate'})do old[key]=S[key]end
  local static=type(filtergc)=='function'and filtergc('function',{Name='calculate_static_stat_multiplier'},true)or nil
  local levelFn=type(filtergc)=='function'and filtergc('function',{Name='calculate_level',Constants={'log','floor'}},true)or nil
  function K.buildPlan(profile,slots,ss)
@@ -14045,12 +14067,35 @@ return P
   if not policy.matches(K.choices,profile,slots)then return false,'Waiting for your selected team' end
   return true,K.buildPlan(profile,slots,ss)
  end
+ function K.selectedPlan()
+  local profile,slots,ss=read()
+  local valid=policy.validate(K.choices,profile,slots,defs,S.isDirectCombatId)
+  if not valid then return nil end
+  return K.buildPlan(profile,slots,ss)
+ end
+ function K.navigationGate()
+  local function result(reason)S.navigationBlockReason=reason return reason end
+  local arrival=E.FyrelithSummonArrivalBlockReason
+  if arrival then local reason=arrival()if reason then return result(reason)end end
+  if not S.alive or S.enabled==false then return result('Automation stopped')end
+  if E.AAKaiTunPaused or S.kaiTunPaused then return result('Automation paused')end
+  if S.starterEligibilityResolved==false then return result('Checking new-player inventory and Story progress')end
+  if S.developmentBusy then return result('Waiting for Feed/Fuse confirmation')end
+  if S.starterQueueBlocked and S.starterQueueBlocked()then return result('Starter rewards/summons/team setup pending')end
+  if S.summonRewardsPending or S.summonExitPending then return result('Summon rewards/return pending')end
+  if E.AASummonPurchaseOwner then return result('Waiting for summon purchase confirmation')end
+  local confirmed,plan=K.validate()
+  if not confirmed then
+   if K.busy or S.liveEquipController and S.liveEquipController.busy then return result('Waiting for active team request')end
+   return result(plan)
+  end
+  S.bestTeamEquipPending=false S.inventoryTeam=plan
+  return result(nil)
+ end
  function K.step()
   if not K.alive or K.mode~='Manual'then return false end
-  if K.busy then return false end
   if not Loader.IsLobby then K.status='Saved. Your team will apply in the lobby.' return false end
   if not S.alive or not S.instanceGuard or E.AAKaiTunPaused or S.kaiTunPaused then K.status='Saved. Waiting for automation to resume.' return false end
-  if S.teamEquipBusy or S.developmentBusy or E.AASummonPurchaseOwner then K.status='Waiting for the current operation to finish.' return false end
   if S.starterSummon and S.starterSummon.active and S.starterSummon.phase~='FIRST_RUN'and S.starterSummon.phase~='SECOND_RUN'then
    K.status='Saved. Waiting for starter setup to finish.' return false
   end
@@ -14063,6 +14108,8 @@ return P
    local _,plan=K.validate() S.inventoryTeam=plan
    return true
   end
+  if K.busy or S.liveEquipController and S.liveEquipController.busy then K.status='Waiting for active team request.'return false end
+  if S.teamEquipBusy or S.developmentBusy or E.AASummonPurchaseOwner then K.status='Waiting for the current operation to finish.' return false end
   local now=os.clock()
   if K.pending then
    if policy.actionConfirmed(K.pending.action,profile)then K.pending=nil
@@ -14092,6 +14139,7 @@ return P
  S.confirmBestTeamAfterSummon=function(...)if K.mode=='Manual'then return K.step()end return old.confirmBestTeamAfterSummon(...)end
  S.lobbyFillPlan=function(...)if K.mode=='Manual'then return nil end return old.lobbyFillPlan(...)end
  S.requestBestTeam=function(...)if K.mode=='Manual'then return false end return old.requestBestTeam(...)end
+ S.lobbyNavigationGate=function(...)if K.mode=='Manual'then return K.navigationGate()end if old.lobbyNavigationGate then return old.lobbyNavigationGate(...)end end
  if K.mode=='Manual'then S.autoTeam=false end
  local w=center.window
  local page=Instance.new('Frame')page.Name='UnitPage'page.Position=UDim2.fromOffset(20,66)page.Size=UDim2.fromOffset(720,408)
@@ -14115,19 +14163,19 @@ return P
   return b
  end
  text(page,'Title','Unit',16,10,200,28,23)
- text(page,'Hint','Choose the exact copies you want. Changes take effect after Apply.',16,41,688,18,12)
+ text(page,'Hint','Drag a card from inventory to a team slot, then Apply team.',16,41,688,18,12)
  local refresh
  local auto=button(page,'Auto','Auto',16,67,92,30,function()K.draftMode='Auto'K.dirty=true refresh()end)
  local manual=button(page,'Manual','Manual',116,67,92,30,function()K.draftMode='Manual'K.dirty=true refresh()end)
  local modeLabel=text(page,'Mode','',224,67,480,30,12)
  local slotButtons={}
- local inventory=Instance.new('ScrollingFrame')inventory.Name='Inventory'inventory.Position=UDim2.fromOffset(16,218)inventory.Size=UDim2.fromOffset(688,126)
+ local inventory=Instance.new('ScrollingFrame')inventory.Name='Inventory'inventory.Position=UDim2.fromOffset(16,238)inventory.Size=UDim2.fromOffset(688,106)
  inventory.BackgroundTransparency=1 inventory.BorderSizePixel=0 inventory.ScrollBarThickness=4 inventory.ScrollBarImageColor3=Color3.fromRGB(195,143,230)
  inventory.CanvasSize=UDim2.new()inventory.ZIndex=21 inventory.Parent=page
  local search=Instance.new('TextBox')search.Name='Search'search.PlaceholderText='Search owned units by name, rarity, or ID...'search.Text=''search.ClearTextOnFocus=false
  search.TextSize=13 search.Font=Enum.Font.Gotham search.TextColor3=Color3.fromRGB(235,224,244)search.PlaceholderColor3=Color3.fromRGB(157,139,173)
- search.BackgroundColor3=Color3.fromRGB(31,23,41)search.BorderSizePixel=0 search.Position=UDim2.fromOffset(16,178)search.Size=UDim2.fromOffset(542,30)search.ZIndex=21 search.Parent=page rounded(search,8)
- local countLabel=text(page,'Count','',568,178,136,30,12)
+ search.BackgroundColor3=Color3.fromRGB(31,23,41)search.BorderSizePixel=0 search.Position=UDim2.fromOffset(16,202)search.Size=UDim2.fromOffset(542,28)search.ZIndex=21 search.Parent=page rounded(search,8)
+ local countLabel=text(page,'Count','',568,202,136,28,12)
  local status=text(page,'Status','',16,349,688,21,11)status.TextTruncate=Enum.TextTruncate.AtEnd
  local function unitLevel(uuid,own,ss)
   K.levelCache=K.levelCache or {}
@@ -14156,36 +14204,193 @@ return P
   table.sort(rows,function(a,b)if a.name~=b.name then return a.name<b.name end if a.level~=b.level then return (tonumber(a.level)or 0)>(tonumber(b.level)or 0)end return a.uuid<b.uuid end)
   return rows
  end
+ local cards=(function()
+return function(d)
+ local K,policy=d.K,d.policy
+ local C={templates={},bindings={},visuals=setmetatable({},{__mode='k'}),objects={},links={}}
+ local UIS,Gui,native
+ pcall(function()UIS=game:GetService('UserInputService')Gui=game:GetService('GuiService')native=d.Loader.load_client_service(script,'GUIService')end)
+ local function link(signal,fn,group)
+  if not signal then return end
+  local c=signal:Connect(fn)table.insert(group or C.links,c)return c
+ end
+ local function signature(uuid,own)return uuid..':'..tostring(own.unit_id)..':'..tostring(own.xp)..':'..tostring(own.shiny)..':'..tostring(own.traits)end
+ function C.visual(host,uuid,own,inset)
+  local key=own and signature(uuid,own)or ''
+  if C.visuals[host]==key then return host:FindFirstChild('UnitVisual')~=nil end C.visuals[host]=key
+  local old=host:FindFirstChild('UnitVisual')if old then old:Destroy()end
+  if not own or not native or type(native.make_unit_frame)~='function'then return false end
+  local cached=C.templates[uuid]
+  if not cached or cached.key~=key then
+   if cached then cached.frame:Destroy()end
+   local ok,frame=pcall(native.make_unit_frame,own.unit_id,own.xp or 0,nil,own,true,{_from_moving_ui=false})
+   if not ok or not frame then C.visuals[host]=nil return false end
+   C.templates[uuid]={key=key,frame=frame}cached=C.templates[uuid]
+  end
+  local frame=cached.frame:Clone()frame.Name='UnitVisual'frame.Active=false
+  frame.AnchorPoint=Vector2.zero frame.Position=UDim2.fromOffset(0,inset or 0)
+  frame.Size=UDim2.new(1,0,1,-(inset or 0))frame.ZIndex=host.ZIndex+1 frame.Parent=host
+  for _,v in ipairs(frame:QueryDescendants('GuiObject'))do
+   v.ZIndex=host.ZIndex+1+math.clamp(v.ZIndex,0,12)
+   if v:IsA('GuiButton')then v.Active=false v.AutoButtonColor=false end
+  end
+  return true
+ end
+ local function point(input)
+  local p=input.Position
+  local xy=Vector2.new(p.X,p.Y)
+  -- InputObject.Position is already in the same GUI coordinates as AbsolutePosition.
+  -- Subtracting GetGuiInset again shifts the drop above its target.
+  return xy
+ end
+ local function ghostPoint(p)return p-(d.screen.AbsolutePosition or Vector2.zero)end
+ local function rectangles()
+  local out={}
+  for _,row in ipairs(d.slots)do
+   local p,s=row.button.AbsolutePosition,row.button.AbsoluteSize
+   out[#out+1]={slot=row.slot,x=p.X,y=p.Y,w=s.X,h=s.Y}
+  end
+  return out
+ end
+ local function inside(p,object)
+  local a,s=object.AbsolutePosition,object.AbsoluteSize
+  return p.X>=a.X and p.X<=a.X+s.X and p.Y>=a.Y and p.Y<=a.Y+s.Y
+ end
+ local function stopGhost()
+  if C.ghost then C.ghost:Destroy()C.ghost=nil end
+  if C.drag and C.drag.scroll~=nil then d.inventory.ScrollingEnabled=C.drag.scroll end
+  C.drag=nil K.dragging=false
+ end
+ function C.drop(uuid,slot,sourceSlot)
+  local profile,slots=d.read()
+  if not profile then return false end
+  local draft,why=policy.drop(K.draft,slot,uuid,sourceSlot,profile.owned_units,slots)
+  if not draft then K.status=why return false end
+  K.draft=draft K.draftMode='Manual'K.slot=slot K.dirty=true
+  K.status='Selected slot '..slot..'. Press Apply team to use this team.'
+  d.refresh()return true
+ end
+ local function startGhost(drag,p)
+  if drag.active then return end drag.active=true K.dragging=true
+  drag.scroll=d.inventory.ScrollingEnabled d.inventory.ScrollingEnabled=false
+  local ghost=Instance.new('Frame')ghost.Name='UnitDragGhost'ghost.BackgroundTransparency=1 ghost.Size=UDim2.fromOffset(86,92)ghost.ZIndex=1000 ghost.Parent=d.screen
+  C.ghost=ghost
+  local profile=d.read()local own=profile and profile.owned_units[drag.uuid]
+  C.visual(ghost,drag.uuid,own,0)
+  local g=ghostPoint(p)ghost.Position=UDim2.fromOffset(g.X-43,g.Y-46)
+ end
+ local function move(input)
+  local drag=C.drag if not drag then return end
+  if drag.touch then if input~=drag.input then return end
+  elseif input.UserInputType~=Enum.UserInputType.MouseMovement then return end
+  local p=point(input)local delta=p-drag.start drag.last=p
+  if not drag.active then
+   if drag.touch and os.clock()-drag.at<.22 and math.abs(delta.Y)>12 and math.abs(delta.Y)>math.abs(delta.X)*1.3 then K.suppressClickUntil=os.clock()+.4 stopGhost()return end
+   if delta.Magnitude<8 then return end
+   startGhost(drag,p)
+  end
+  if C.ghost then local g=ghostPoint(p)C.ghost.Position=UDim2.fromOffset(g.X-43,g.Y-46)end
+  local slot=policy.hitSlot(p,rectangles())
+  for _,row in ipairs(d.slots)do row.button.BackgroundColor3=row.slot==slot and Color3.fromRGB(104,61,137)or row.slot==K.slot and Color3.fromRGB(79,48,103)or Color3.fromRGB(33,24,45)end
+ end
+ local function finish(input)
+  local drag=C.drag if not drag then return end
+  if drag.touch and input~=drag.input then return end
+  if not drag.touch and input.UserInputType~=Enum.UserInputType.MouseButton1 then return end
+  -- Mouse button InputEnded can retain its press position; use the last move.
+  local active=drag.active local p=drag.last or point(input)
+  local slot=active and policy.hitSlot(p,rectangles())or nil
+  C.lastDrop={x=p.X,y=p.Y,slot=slot,uuid=drag.uuid,active=active}
+  local remove=active and not slot and drag.sourceSlot and inside(p,d.inventory)
+  stopGhost()
+  if active then
+   K.suppressClickUntil=os.clock()+.3
+   if slot then C.drop(drag.uuid,slot,drag.sourceSlot)
+   elseif remove then K.draft[drag.sourceSlot]=nil K.draftMode='Manual'K.dirty=true d.refresh()
+   else K.status='Drop cancelled. Your selected team is unchanged.'d.refresh()end
+  end
+ end
+ function C.bind(button,uuid,sourceSlot,group)
+  local function click()
+   if K.dragging or os.clock()<(K.suppressClickUntil or 0)then return end
+   if sourceSlot then K.slot=sourceSlot K.draftMode='Manual'd.refresh()
+   else C.drop(uuid,K.slot,nil)end
+  end
+  local handle=Instance.new('TextButton')handle.Name='DragHandle'handle.Text=''handle.BackgroundTransparency=1
+  handle.Size=UDim2.new(1,0,1,sourceSlot and -14 or 0)handle.Position=UDim2.fromOffset(0,sourceSlot and 14 or 0)
+  handle.ZIndex=button.ZIndex+40 handle.Parent=button
+  link(handle.Activated,click,group)
+  -- Keep the parent activation path for keyboard/gamepad selection.
+  link(button.Activated,click,group)
+  link(handle.InputBegan,function(input)
+   if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
+   if not uuid then return end
+   stopGhost()
+   local p=point(input)local drag={uuid=uuid,sourceSlot=sourceSlot,input=input,touch=input.UserInputType==Enum.UserInputType.Touch,start=p,last=p,at=os.clock()}
+   C.drag=drag
+   if drag.touch and task.delay then task.delay(.24,function()if C.drag==drag then startGhost(drag,drag.last)end end)end
+  end,group)
+  return handle
+ end
+ if UIS then link(UIS.InputChanged,move)link(UIS.InputEnded,finish)link(UIS.WindowFocusReleased,stopGhost)end
+ link(d.page:GetPropertyChangedSignal('Visible'),function()if not d.page.Visible then stopGhost()end end)
+ link(d.screen:GetPropertyChangedSignal('Enabled'),function()if not d.screen.Enabled then stopGhost()end end)
+ function C.clearBindings(host)
+  local bound=C.bindings[host]if bound then for _,c in ipairs(bound)do c:Disconnect()end end C.bindings[host]={}
+  local handle=host:FindFirstChild('DragHandle')if handle then handle:Destroy()end
+  return C.bindings[host]
+ end
+ function C.close()
+  stopGhost()
+  for _,c in ipairs(C.links)do c:Disconnect()end
+  for _,list in pairs(C.bindings)do for _,c in ipairs(list)do c:Disconnect()end end
+  for _,row in pairs(C.templates)do row.frame:Destroy()end
+ end
+ C.finish=finish C.move=move C.cancel=stopGhost
+ return C
+end
+
+ end)()({K=K,policy=policy,Loader=Loader,screen=center.screen,page=page,inventory=inventory,slots=slotButtons,read=read,refresh=function()refresh()end})
+ K.cards=cards
  local function renderInventory(profile,ss)
+  if K.dragging then return end
+  local rows=inventoryRows(profile,ss)
+  local stamp={search.Text,tostring(K.page)}
+  for _,slot in ipairs(Settings.UNIT_SLOTS)do stamp[#stamp+1]=slot..':'..tostring(K.draft[slot])end
+  for _,row in ipairs(rows)do stamp[#stamp+1]=row.uuid..':'..tostring(row.own.xp)..':'..tostring(row.own.traits)..':'..tostring(row.own.shiny)end
+  local fingerprint=table.concat(stamp,'|')
+  if K.inventoryRenderKey==fingerprint then return end K.inventoryRenderKey=fingerprint
   -- Connections on destroyed rows are disconnected instead of accumulating on refresh.
   if K.rowConnections then for _,c in ipairs(K.rowConnections)do c:Disconnect()end end K.rowConnections={}
   for _,child in ipairs(inventory:GetChildren())do child:Destroy()end
-  local rows=inventoryRows(profile,ss)
-  local pages=math.max(1,math.ceil(#rows/60))K.page=math.clamp(K.page,1,pages)
+  local pages=math.max(1,math.ceil(#rows/30))K.page=math.clamp(K.page,1,pages)
   countLabel.Text=tostring(#rows)..' units | '..K.page..'/'..pages
-  local first=(K.page-1)*60+1 local last=math.min(#rows,first+59)
+  local first=(K.page-1)*30+1 local last=math.min(#rows,first+29)
   for i=first,last do
-   local row=rows[i]local n=i-first local x=(n%2)*342 local y=math.floor(n/2)*52
+   local row=rows[i]local n=i-first local x=(n%6)*114 local y=math.floor(n/6)*102
    local selectedSlot
    for slot,uuid in pairs(K.draft)do if uuid==row.uuid then selectedSlot=slot break end end
    local equipped=false for _,uuid in pairs(profile.equipped_units or {})do if uuid==row.uuid then equipped=true break end end
    local b=Instance.new('TextButton')b.Name='OwnedUnit_'..i b.Text=''b.BackgroundColor3=selectedSlot and Color3.fromRGB(70,43,90)or Color3.fromRGB(31,24,41)
-   b.BorderSizePixel=0 b.Position=UDim2.fromOffset(x,y)b.Size=UDim2.fromOffset(334,46)b.ZIndex=22 b.Parent=inventory rounded(b,8)
-   local title=text(b,'Name',row.name..(row.own.shiny and '  [Shiny]'or ''),10,3,310,20,13)title.TextTruncate=Enum.TextTruncate.AtEnd
-   text(b,'Details','Lv.'..tostring(row.level)..'  '..tostring(row.def.rarity or '')..(selectedSlot and '  | Slot '..selectedSlot or equipped and '  | Equipped'or ''),10,24,310,17,10)
-   K.rowConnections[#K.rowConnections+1]=b.Activated:Connect(function()
-    if K.draftMode~='Manual'then K.status='Select Manual to choose units.'return end
-    local fresh=read()if not fresh then return end
-    local updated,why=policy.assign(K.draft,K.slot,row.uuid,fresh.owned_units)
-    if not updated then K.status=why return end
-    K.draft=updated K.dirty=true K.status='Slot '..K.slot..' selected. Press Apply when ready.'refresh()
-   end)
+   b.BorderSizePixel=0 b.Position=UDim2.fromOffset(x,y)b.Size=UDim2.fromOffset(106,94)b.ZIndex=22 b.Parent=inventory rounded(b,8)
+   b:SetAttribute('UnitUUID',row.uuid)
+   if not cards.visual(b,row.uuid,row.own,0)then
+    local title=text(b,'Name',row.name..(row.own.shiny and ' *'or ''),5,20,96,40,11)title.TextWrapped=true
+    text(b,'Details','Lv.'..tostring(row.level)..' | '..tostring(row.def.cost or 0),5,64,96,20,10)
+   end
+   if selectedSlot then
+    local border=Instance.new('UIStroke')border.Thickness=2 border.Color=Color3.fromRGB(220,160,250)border.Parent=b
+   end
+   cards.bind(b,row.uuid,nil,K.rowConnections)
   end
-  inventory.CanvasSize=UDim2.fromOffset(0,math.ceil((last-first+1)/2)*52)
+  inventory.CanvasSize=UDim2.fromOffset(0,math.ceil(math.max(0,last-first+1)/6)*102)
  end
  refresh=function()
   local profile,slots,ss=read()
   local unlocked={}for _,slot in ipairs(slots)do unlocked[slot]=true end
+  if K.mode=='Auto'and (K.draftMode=='Auto'or next(K.draft)==nil)and not K.dirty and profile then
+   K.draft={}for _,slot in ipairs(slots)do local uuid=profile.equipped_units[slot]if type(uuid)=='string'and uuid~=''then K.draft[slot]=uuid end end
+  end
   auto.BackgroundColor3=K.draftMode=='Auto'and Color3.fromRGB(205,153,240)or Color3.fromRGB(37,27,49)
   auto.TextColor3=K.draftMode=='Auto'and Color3.fromRGB(26,13,35)or Color3.fromRGB(231,217,242)
   manual.BackgroundColor3=K.draftMode=='Manual'and Color3.fromRGB(205,153,240)or Color3.fromRGB(37,27,49)
@@ -14193,7 +14398,11 @@ return P
   modeLabel.Text='Active: '..K.mode..(K.dirty and '  |  Unsaved changes'or '')
   for _,row in ipairs(slotButtons)do
    local uuid=K.draft[row.slot]local own=profile and profile.owned_units[uuid]local d=own and defs[own.unit_id]
-   row.button.Text='Slot '..row.slot..'\n'..(not unlocked[row.slot]and 'Locked'or d and tostring(d.name or own.unit_id)or uuid and 'Missing unit'or 'Empty')
+   local native=cards.visual(row.button,uuid,own,14)
+   row.button.Text=native and ''or ('Slot '..row.slot..'\n'..(not unlocked[row.slot]and 'Locked'or d and tostring(d.name or own.unit_id)or uuid and 'Missing unit'or 'Drop unit'))
+   if row.boundUUID~=uuid or not row.bound then
+    row.boundUUID=uuid row.bound=true cards.bind(row.button,uuid,row.slot,cards.clearBindings(row.button))
+   end
    row.button.BackgroundColor3=row.slot==K.slot and Color3.fromRGB(79,48,103)or Color3.fromRGB(33,24,45)
    row.button.TextTransparency=unlocked[row.slot]and 0 or .5 row.clear.Visible=uuid~=nil
   end
@@ -14201,12 +14410,14 @@ return P
  end
  for index,slot in ipairs(Settings.UNIT_SLOTS)do
   if index>6 then break end
-  local b=button(page,'Slot'..slot,'',16+(index-1)*116,106,108,61,function()
+  local b=button(page,'Slot'..slot,'',16+(index-1)*116,98,108,96,function()
    local _,slots=read()if not table.find(slots,slot)then K.status='This slot is locked.'return end
    K.slot=slot K.draftMode='Manual'refresh()
   end)
   b.TextSize=11 b.TextWrapped=true
-  local clear=button(b,'Clear','x',88,2,18,18,function()K.draft[slot]=nil K.dirty=true K.draftMode='Manual'refresh()end)
+  local slotNumber=text(b,'SlotNumber','SLOT '..slot,4,0,72,14,9)slotNumber.ZIndex=75
+  local clear=button(b,'Clear','x',88,0,20,18,function()K.draft[slot]=nil K.dirty=true K.draftMode='Manual'refresh()end)
+  clear.ZIndex=80
   clear.TextSize=10
   slotButtons[#slotButtons+1]={button=b,clear=clear,slot=slot}
  end
@@ -14220,7 +14431,7 @@ return P
  button(page,'Previous','<',354,376,34,27,function()K.page-=1 refresh()end)
  button(page,'Next','>',394,376,34,27,function()K.page+=1 refresh()end)
  function K.applyDraft()
-  if K.busy or S.teamEquipBusy then return false,'Wait for the current team request to finish.'end
+  if K.busy then return false,'Wait for the current manual team request to finish.'end
   local profile,slots=read()
   if K.draftMode=='Manual'then
    local valid,why=policy.validate(K.draft,profile,slots,defs,S.isDirectCombatId)
@@ -14230,6 +14441,7 @@ return P
   local stored,why=persist(K.draftMode,choices)if not stored then return false,'Could not save team: '..tostring(why)end
   K.mode=K.draftMode K.choices=choices K.pending=nil K.nextAt=0 K.dirty=false
   S.autoTeam=K.mode=='Auto'S.bestTeamEquipPending=false
+  if K.mode=='Manual'and S.liveEquipController and type(S.liveEquipController.stop)=='function'then S.liveEquipController.stop()end
   local settingsOK=S.saveSettings()
   if K.mode=='Auto'then old.requestBestTeam('Unit tab: Auto selected',true)end
   K.status=not settingsOK and 'Team saved; general settings could not be saved.'or K.mode=='Auto'and 'Auto team enabled.'or 'Manual team saved. Applying in the lobby.'
@@ -14238,6 +14450,8 @@ return P
  button(page,'Apply','Apply team',536,376,168,27,function()local applied,why=K.applyDraft()if not applied then K.status=why end end,true)
  connect(search:GetPropertyChangedSignal('Text'),function()K.page=1 refresh()end)
  local originalOpen=center.openPage
+ local selectNavigation
+ local pageToNav={home='OverviewNavigation',unit='UnitNavigation',summon='SummonNavigation',WebhookPage='Webhook',ConfigPage='Config'}
  local wrappedOpen
  wrappedOpen=function(name,...)
   page.Visible=false
@@ -14252,29 +14466,53 @@ return P
    end
    if center.dex then center.dex.Visible=false end
    page.Visible=true center.page='unit'refresh()
+   if selectNavigation then selectNavigation('UnitNavigation')end
    return
   end
-  return originalOpen(name,...)
+  local result=originalOpen(name,...)
+  if selectNavigation then selectNavigation(pageToNav[name]or 'OverviewNavigation')end
+  return result
  end
  center.openPage=wrappedOpen
  local nav=button(w,'UnitNavigation','Unit',390,13,54,32,function()center.openPage('unit')end,true)
  nav.ZIndex=40 nav.BackgroundTransparency=1
  local navigation={{'OverviewNavigation',304,82},{'UnitNavigation',390,54},{'SummonNavigation',448,102},{'Webhook',554,90},{'Config',648,80}}
  local originalNav={}
+ local stylingNavigation=false
+ local function paintNavigation()
+  if stylingNavigation then return end stylingNavigation=true
+  for _,spec in ipairs(navigation)do
+   local b=w:FindFirstChild(spec[1])
+   if b then
+    local selected=spec[1]==K.navSelected
+    b.BackgroundTransparency=selected and 0 or 1
+    b.BackgroundColor3=selected and Color3.fromRGB(211,165,245)or Color3.fromRGB(29,21,41)
+    b.TextColor3=selected and Color3.fromRGB(24,12,37)or Color3.fromRGB(223,211,237)
+   end
+  end
+  stylingNavigation=false
+ end
+ selectNavigation=function(name)K.navSelected=name paintNavigation()end
  for _,spec in ipairs(navigation)do
   local b=w:FindFirstChild(spec[1])
   if b then
-   if b~=nav then originalNav[b]={Position=b.Position,Size=b.Size,TextSize=b.TextSize}end
+   if b~=nav then originalNav[b]={Position=b.Position,Size=b.Size,TextSize=b.TextSize,TextColor3=b.TextColor3,BackgroundColor3=b.BackgroundColor3,BackgroundTransparency=b.BackgroundTransparency}end
    b.Position=UDim2.fromOffset(spec[2],13)b.Size=UDim2.fromOffset(spec[3],32)b.TextSize=13
-   if b~=nav then connect(b.Activated,function()page.Visible=false nav.BackgroundTransparency=1 end)end
+   local name=spec[1]
+   if b~=nav then connect(b.Activated,function()page.Visible=false selectNavigation(name)end)end
+   for _,property in ipairs({'TextColor3','BackgroundTransparency','BackgroundColor3'})do
+    connect(b:GetPropertyChangedSignal(property),paintNavigation)
+   end
   end
  end
  connect(page:GetPropertyChangedSignal('Visible'),function()
-  nav.BackgroundTransparency=page.Visible and 0 or 1
-  if page.Visible then for _,spec in ipairs(navigation)do local b=w:FindFirstChild(spec[1])if b and b~=nav then b.BackgroundTransparency=1 end end end
+  if page.Visible then selectNavigation('UnitNavigation')end
  end)
+ selectNavigation(pageToNav[center.page]or 'OverviewNavigation')
+ K.selectNavigation=selectNavigation
  function K.close()
   K.alive=false
+  cards.close()
   for _,c in ipairs(K.connections)do c:Disconnect()end
   for _,c in ipairs(K.rowConnections or {})do c:Disconnect()end
   if E.AAInvokeConnected==guardedInvoke then E.AAInvokeConnected=oldInvoke end
