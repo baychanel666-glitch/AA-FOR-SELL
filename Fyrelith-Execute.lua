@@ -1,6 +1,32 @@
 -- Fyrelith full runtime: current UI and confirmed text-only Discord reports.
 local E=getgenv()
 local source=[========================================[
+-- FYRELITH_SETUP_SUMMON_PRIORITY_V1
+do
+ local E=getgenv()local cached
+ function E.FyrelithSetupSummonPriority()
+  local c=E.FyrelithCompassRequirements local r=c and c.alive and c.setupSummon
+  if r then return r.enabled==true or r.pending~=nil or r.awaitingResults==true end
+  if cached==nil then
+   cached=false
+   local P=game:GetService('Players').LocalPlayer
+   if P and type(isfile)=='function'and type(readfile)=='function'then
+    local path='AASmartPlacement/setup_summon_'..P.UserId..'.json'
+    if isfile(path)then
+     local ok,v=pcall(function()return game:GetService('HttpService'):JSONDecode(readfile(path))end)
+     cached=not ok or type(v)~='table'or v.userId~=P.UserId or v.enabled==true or v.pending~=nil or v.awaitingResults==true
+    end
+   end
+  end
+  return cached
+ end
+ function E.FyrelithSetupBlocksRequest(name,action)
+  if not E.FyrelithSetupSummonPriority()then return false end
+  return name=='request_join_lobby'or name=='request_lock_level'or name=='request_start_game'or name=='lobby_world_skip'
+   or name=='set_game_finished_vote'and(action=='replay'or action=='next_story')
+ end
+end
+
 -- FYRELITH_UNIT_NATIVE_GATES_V1
 do
  local E=getgenv()
@@ -91,7 +117,7 @@ do
  -- Consume only this execution's explicit request. Map reloads restore saved/UI choices.
  if plan then E.FyrelithStartConfig=nil end
 end
-getgenv().FyrelithBuild='2026-11-08-manual-match-fastpass-39'
+getgenv().FyrelithBuild='2026-11-11-vote-lose-60'
 -- FYRELITH_AUTO_NOTICE_V1: honor every native five-second confirmation delay.
 do
  local E=getgenv()
@@ -168,7 +194,7 @@ do
 end
 
 getgenv().FyrelithReliability=assert(loadstring([==================[
-local M={build='2026-11-08-manual-match-fastpass-39'}
+local M={build='2026-11-11-vote-lose-60'}
 function M.finite(v)return type(v)=='number'and v==v and v>=0 and v<math.huge end
 function M.batch(cost,balance,budget,remaining,free)
  if not M.finite(cost)or cost<=0 or not M.finite(balance)or not M.finite(budget)or not M.finite(remaining)then return 0,'Price or balance unavailable'end
@@ -980,7 +1006,7 @@ end
 Boot.compatSource=[==============================[
 -- FYRELITH_PINNED_BOOTSTRAP_V18: only this verified release may start.
 task.spawn(function()
- local E=getgenv()local expected='2026-11-08-manual-match-fastpass-39'
+ local E=getgenv()local expected='2026-11-11-vote-lose-60'
  local deadline=os.clock()+60 local P
  repeat
   P=game:GetService('Players').LocalPlayer
@@ -2188,6 +2214,7 @@ end
 E.AAInvokeConnected=function(...)
  local remote,banner,mode=...
  local name=remote and remote.Name
+ if E.FyrelithSetupBlocksRequest and E.FyrelithSetupBlocksRequest(name,banner)then return false,'SETUP_SUMMON_PRIORITY'end
  if E.AAKaiTunPaused then
   local S=E.AASmartPlacement local data=workspace:FindFirstChild('_DATA')
   local finished=data and data:FindFirstChild('GameFinished')
@@ -6262,6 +6289,10 @@ local function roundTick()
     local data=workspace:FindFirstChild("_DATA")
     local finished=val(data,"GameFinished")==true
     if finished and S.observeArcResult then S.observeArcResult() end
+    if finished and E.FyrelithSetupSummonPriority and E.FyrelithSetupSummonPriority()then
+        status.Text='Setup Auto Summon priority: returning after rewards; Next/Retry held'
+        return true
+    end
     -- Give the independent summon watcher priority over Next/Retry on a completed act.
     if finished and (S.summonCheckDue or S.summonResultDue()) and S.hasSummonTargets()~=false then
         if S.roundRecoveryActive and S.summonResultRecovery then
@@ -8720,7 +8751,7 @@ local store="AASmartPlacement"
 local runtimeFile=E.FyrelithBoot.accountPath("runtime.luau")
 local settingsFile=E.FyrelithBoot.accountPath("settings.json")
 local HTTP=game:GetService("HttpService")
-local fields={"autoFarmXP","disable3D","disableUnitAnimations","autoJoinInfinite","storyAutomationEnabled","developmentAllowed","kaiTunConfigured","kaiTunPaused","autoDaily","autoInfiniteRetry","autoRedeem","arcRunKind","autoInfinite","infiniteStage","skipWaveLimitEnabled","skipWaveLimit","infiniteEndEnabled","infiniteEndWave","infiniteEndReturnLobby","reserve","upgradeEnabled","autoStart","autoNext","autoRetry","autoRewards","elementEnabled","enabled","autorun",
+local fields={"autoFarmXP","disable3D","disableUnitAnimations","autoJoinInfinite","storyAutomationEnabled","developmentAllowed","kaiTunConfigured","kaiTunPaused","autoDaily","autoInfiniteRetry","autoRedeem","arcRunKind","autoInfinite","infiniteStage","skipWaveLimitEnabled","skipWaveLimit","infiniteEndEnabled","infiniteEndWave","infiniteEndReturnLobby","infiniteEndVoteLose","reserve","upgradeEnabled","autoStart","autoNext","autoRetry","autoRewards","elementEnabled","enabled","autorun",
     "lobbyRewards","battlePassRewards","levelRewards","valueUpgrades","dynamicReserve","safeSkip","autoSkipWave","autoTarget","mobileMode","autoTeam","autoArcSkip","arcAutoFeed","arcAutoFuse","arcWorld","arcStage","arcMainAttack","finalWaveSell","questFarm","farmEnabled","stackEnabled","airDefense",
     "developmentAutoBlocked","feedEnabled","evolveEnabled","feedTarget","feedItem","feedBudget","evolveBudget","fuseBudget","fuseRarities","developmentTargets","autoFeedSelected","autoFuseSelected","autoBestDevelopment","autoBestThresholdHandled","autoBestManualOff","autoBestPolicyOwner","starterSetupSnapshot"}
 function S.settingsSnapshot()
@@ -8759,6 +8790,12 @@ end
 function S.setInfiniteEndReturnLobby(value)
     S.infiniteEndReturnLobby=value==true
     S.infiniteEndLetBaseFall=not S.infiniteEndReturnLobby
+    S.infiniteEndVoteLose=false
+end
+function S.setInfiniteEndVoteLose(value)
+    S.infiniteEndVoteLose=value==true
+    if S.infiniteEndVoteLose then S.infiniteEndReturnLobby=false S.infiniteEndLetBaseFall=false
+    elseif not S.infiniteEndLetBaseFall then S.infiniteEndReturnLobby=true end
 end
 local function applySettings(settings)
     if type(settings)~="table" or (settings.userId and settings.userId~=P.UserId) then return end
@@ -8770,7 +8807,7 @@ local function applySettings(settings)
             if type(v)=="string" and #v<5000 then S[field]=v end
         elseif type(v)=="boolean" then S[field]=v end
     end
-    S.setInfiniteEndReturnLobby(S.infiniteEndReturnLobby~=false)
+    if S.infiniteEndVoteLose then S.setInfiniteEndVoteLose(true)else S.setInfiniteEndReturnLobby(S.infiniteEndReturnLobby~=false)end
 end
 function S.armAutorun(force)
     if not S.canQueue then return false,"queue_on_teleport unavailable" end
@@ -8951,7 +8988,7 @@ local sharedConfigDefaults={
     farmEnabled=true,
     feedEnabled=false,
     finalWaveSell=true,
-    infiniteEndReturnLobby=true,
+    infiniteEndReturnLobby=true, infiniteEndVoteLose=false,
     infiniteEndEnabled=false,
     infiniteEndWave=46,
     kaiTunPaused=false,
@@ -9783,6 +9820,7 @@ function S.infiniteExitTick()
         if E.FyrelithInfiniteEndSession then E.FyrelithInfiniteEndSession.completed=true end
     elseif S.infiniteEndEnabled~=true or S.infiniteEndReturnLobby~=false then S.infiniteLetBaseFallActive=false end
     if not S.shouldReturnInfinite(wave,(Loader.LevelData or {}).infinite==true,val(data,"GameFinished"),S.infiniteEndEnabled,S.infiniteEndWave) then return false end
+    if S.infiniteEndVoteLose then return true end -- Vote adapter owns this selected exit action.
     if S.infiniteEndReturnLobby==false then return S.infiniteLetBaseFallTick(wave)end
     S.infiniteExitStatus="Cleared wave "..S.infiniteEndWave.."; returning with credited rewards"
     if os.clock()-(S.infiniteExitSentAt or -math.huge)<8 then return true end
@@ -12648,10 +12686,11 @@ local st={connections={},rows={},options={}} E.FyrelithExpandedSettings=st
 local function on(sig,fn) table.insert(st.connections,sig:Connect(fn)) end
 local H=game:GetService('HttpService') local path='AASmartPlacement/user_config_'..game.Players.LocalPlayer.UserId..'.json'
 if S.disable3D==nil then S.disable3D=true end
+if S.infiniteEndVoteLose==nil then S.infiniteEndVoteLose=false end
 local groups={
  {'CONTROL',{'Paused','kaiTunPaused'},{'Teleport Autorun','autorun'},{'Disable 3D','disable3D'},{'Hide Unit & Enemy Animations','disableUnitAnimations'}},
  {'BATTLE',{'Smart Upgrades','upgradeEnabled'},{'Damage Type Counters','elementEnabled'},{'Auto Target','autoTarget'},{'Air Defense','airDefense'},{'Farm Units','farmEnabled'},{'Stack Placement','stackEnabled'},{'Value Upgrades','valueUpgrades'},{'Dynamic Reserve','dynamicReserve'},{'Final Wave Sell','finalWaveSell'},{'Mobile Mode','mobileMode'}},
- {'STAGES & WAVES',{'Auto Start','autoStart'},{'Auto Next','autoNext'},{'Auto Retry','autoRetry'},{'Auto Skip Waves','autoSkipWave'},{'Safe Skip','safeSkip'},{'Wave Skip Limit','skipWaveLimitEnabled'},{'Stop Skip At Wave','skipWaveLimit','number'},{'Auto World Skip / Story Quest','storyAutomationEnabled'},{'Auto Infinite','autoInfinite'},{'Auto Join Infinite','autoJoinInfinite'},{'Auto Farm XP','autoFarmXP'},{'Infinite Retry','autoInfiniteRetry'},{'Infinite End Wave','infiniteEndEnabled'},{'End Infinite At Wave','infiniteEndWave','number'},{'Infinite End Return Lobby','infiniteEndReturnLobby'},{'Infinite End Let Base Fall','infiniteEndLetBaseFall'}},
+ {'STAGES & WAVES',{'Auto Start','autoStart'},{'Auto Next','autoNext'},{'Auto Retry','autoRetry'},{'Auto Skip Waves','autoSkipWave'},{'Safe Skip','safeSkip'},{'Wave Skip Limit','skipWaveLimitEnabled'},{'Stop Skip At Wave','skipWaveLimit','number'},{'Auto World Skip / Story Quest','storyAutomationEnabled'},{'Auto Infinite','autoInfinite'},{'Auto Join Infinite','autoJoinInfinite'},{'Auto Farm XP','autoFarmXP'},{'Infinite Retry','autoInfiniteRetry'},{'Infinite End Wave','infiniteEndEnabled'},{'End Infinite At Wave','infiniteEndWave','number'},{'Infinite End Return Lobby','infiniteEndReturnLobby'},{'Infinite End Let Base Fall','infiniteEndLetBaseFall'},{'Infinite End Vote to Lose','infiniteEndVoteLose'}},
  {'REWARDS & TEAM',{'Auto Round Rewards','autoRewards'},{'Daily Rewards','autoDaily'},{'Lobby Rewards','lobbyRewards'},{'Battle Pass Rewards','battlePassRewards'},{'Level Rewards','levelRewards'},{'Redeem Codes','autoRedeem'},{'Auto Best Team','autoTeam'}},
  {'UNIT DEVELOPMENT',{'Allow Development Resources','developmentAllowed'},{'Story Auto Feed','arcAutoFeed'},{'Story Auto Fuse','arcAutoFuse'},{'Feed System','feedEnabled'},{'Evolution System','evolveEnabled'},{'Auto Feed Selected','autoFeedSelected'},{'Auto Fuse Selected','autoFuseSelected'},{'Auto Best Development','autoBestDevelopment'}}
 }
@@ -12661,11 +12700,11 @@ local uiGroups={
  {'UNIT DEVELOPMENT',{'Auto Best Development','autoBestDevelopment'}},
  {'BATTLE & ECONOMY',{'Smart Upgrades','upgradeEnabled'},{'Farm Units','farmEnabled'},{'Air Defense','airDefense'}},
  {'STAGE PROGRESSION',{'Auto Start','autoStart'},{'Auto Next','autoNext'},{'Auto World Skip / Story Quest','storyAutomationEnabled'},{'Auto Join Infinite','autoJoinInfinite'},{'Auto Farm XP','autoFarmXP'},{'Infinite Retry','autoInfiniteRetry'}},
- {'WAVE CONTROL',{'Auto Skip Waves','autoSkipWave'},{'Wave Skip Limit','skipWaveLimitEnabled'},{'Stop Skip At Wave','skipWaveLimit','number'},{'Infinite End Wave','infiniteEndEnabled'},{'End Infinite At Wave','infiniteEndWave','number'},{'Infinite End Return Lobby','infiniteEndReturnLobby'},{'Infinite End Let Base Fall','infiniteEndLetBaseFall'}},
+ {'WAVE CONTROL',{'Auto Skip Waves','autoSkipWave'},{'Wave Skip Limit','skipWaveLimitEnabled'},{'Stop Skip At Wave','skipWaveLimit','number'},{'Infinite End Wave','infiniteEndEnabled'},{'End Infinite At Wave','infiniteEndWave','number'},{'Infinite End Return Lobby','infiniteEndReturnLobby'},{'Infinite End Let Base Fall','infiniteEndLetBaseFall'},{'Infinite End Vote to Lose','infiniteEndVoteLose'}},
  {'REWARDS',{'Auto Round Rewards','autoRewards'},{'Daily Rewards','autoDaily'},{'Lobby Rewards','lobbyRewards'},{'Battle Pass Rewards','battlePassRewards'},{'Level Rewards','levelRewards'},{'Redeem Codes','autoRedeem'}}
 }
-local labels={['Auto Farm XP']='Auto Farm XP',['Hide Unit & Enemy Animations']='Hide unit & enemy animations',['Infinite End Return Lobby']='Return to lobby',['Infinite End Let Base Fall']='Let base fall',['Auto Join Infinite']='Auto Join Infinite',['Auto Best Development']='Auto feed/Fuse best unit',['Paused']='Pause automation',['Auto Best Team']='Equip best team',['Smart Upgrades']='Upgrade all units',['Farm Units']='Build income units',['Air Defense']='Defend against air',['Auto Start']='Start stages',['Auto Next']='Next stage on win',['Auto World Skip / Story Quest']='Auto World Skip / Story Quest',['Auto Infinite']='Enter Infinite',['Infinite Retry']='Retry Infinite',['Auto Skip Waves']='Skip waves',['Wave Skip Limit']='Limit wave skipping',['Stop Skip At Wave']='Stop skipping at',['Infinite End Wave']='End Infinite early',['End Infinite At Wave']='Finish after wave',['Auto Round Rewards']='Claim round rewards',['Daily Rewards']='Daily login rewards',['Lobby Rewards']='Claim lobby rewards',['Battle Pass Rewards']='Battle Pass rewards',['Level Rewards']='Player level rewards',['Redeem Codes']='Redeem game codes'}
-local help={['Auto Farm XP']='Retry first world Story Act 1 for XP. New accounts with no units or one starter Rare finish the usual Gems summons first.',['Hide Unit & Enemy Animations']='Hide unit poses and enemy walk animations; keep movement and combat active.',['Infinite End Return Lobby']='After clearing the target wave, return to lobby.',['Infinite End Let Base Fall']='Sell sellable units, stop combat and wait for defeat. No early teleport.',['Disable 3D']='Darken the game with a 90% black overlay; game rendering stays enabled.',['Auto Join Infinite']='Join an unlocked Infinite directly. Turns Story mode OFF.',['Auto Best Development']='Use EXP items and allowed Fuse donors on the best attacker.',['Paused']='ON pauses all automation.',['Auto Best Team']='Rebuild team safely in lobby.',['Smart Upgrades']='Upgrade attackers and income units.',['Farm Units']='Place and upgrade income units.',['Air Defense']='Keep coverage against flyers.',['Auto Start']='Vote to begin a joined stage.',['Auto Next']='Continue after a victory.',['Auto World Skip / Story Quest']='World Skip first; Acts 1-6 on failure; Infinite if an Act fails.',['Auto Infinite']='Join the configured Infinite map.',['Infinite Retry']='Retry Infinite when Summon allows.',['Auto Skip Waves']='Vote to skip when permitted.',['Wave Skip Limit']='Stop skipping at the number below.',['Stop Skip At Wave']='Positive whole wave number.',['Infinite End Wave']='Choose how to end after clearing the target wave.',['End Infinite At Wave']='Positive whole wave number.',['Auto Round Rewards']='Collect rewards after a round.',['Daily Rewards']='Claim daily check-in rewards.',['Lobby Rewards']='Claim available lobby rewards.',['Battle Pass Rewards']='Claim available unlocked tiers.',['Level Rewards']='Claim rewards for player levels.',['Redeem Codes']='Try supported unclaimed codes.'}
+local labels={['Auto Farm XP']='Auto Farm XP',['Hide Unit & Enemy Animations']='Hide unit & enemy animations',['Infinite End Return Lobby']='Return to lobby',['Infinite End Let Base Fall']='Let base fall',['Infinite End Vote to Lose']='Vote to Lose',['Auto Join Infinite']='Auto Join Infinite',['Auto Best Development']='Auto feed/Fuse best unit',['Paused']='Pause automation',['Auto Best Team']='Equip best team',['Smart Upgrades']='Upgrade all units',['Farm Units']='Build income units',['Air Defense']='Defend against air',['Auto Start']='Start stages',['Auto Next']='Next stage on win',['Auto World Skip / Story Quest']='Auto World Skip / Story Quest',['Auto Infinite']='Enter Infinite',['Infinite Retry']='Retry Infinite',['Auto Skip Waves']='Skip waves',['Wave Skip Limit']='Limit wave skipping',['Stop Skip At Wave']='Stop skipping at',['Infinite End Wave']='End Infinite early',['End Infinite At Wave']='Finish after wave',['Auto Round Rewards']='Claim round rewards',['Daily Rewards']='Daily login rewards',['Lobby Rewards']='Claim lobby rewards',['Battle Pass Rewards']='Battle Pass rewards',['Level Rewards']='Player level rewards',['Redeem Codes']='Redeem game codes'}
+local help={['Infinite End Vote to Lose']='After clearing the target wave, vote to end Infinite as a loss.',['Auto Farm XP']='Retry first world Story Act 1 for XP. New accounts with no units or one starter Rare finish the usual Gems summons first.',['Hide Unit & Enemy Animations']='Hide unit poses and enemy walk animations; keep movement and combat active.',['Infinite End Return Lobby']='After clearing the target wave, return to lobby.',['Infinite End Let Base Fall']='Sell sellable units, stop combat and wait for defeat. No early teleport.',['Disable 3D']='Darken the game with a 90% black overlay; game rendering stays enabled.',['Auto Join Infinite']='Join an unlocked Infinite directly. Turns Story mode OFF.',['Auto Best Development']='Use EXP items and allowed Fuse donors on the best attacker.',['Paused']='ON pauses all automation.',['Auto Best Team']='Rebuild team safely in lobby.',['Smart Upgrades']='Upgrade attackers and income units.',['Farm Units']='Place and upgrade income units.',['Air Defense']='Keep coverage against flyers.',['Auto Start']='Vote to begin a joined stage.',['Auto Next']='Continue after a victory.',['Auto World Skip / Story Quest']='World Skip first; Acts 1-6 on failure; Infinite if an Act fails.',['Auto Infinite']='Join the configured Infinite map.',['Infinite Retry']='Retry Infinite when Summon allows.',['Auto Skip Waves']='Vote to skip when permitted.',['Wave Skip Limit']='Stop skipping at the number below.',['Stop Skip At Wave']='Positive whole wave number.',['Infinite End Wave']='Choose how to end after clearing the target wave.',['End Infinite At Wave']='Positive whole wave number.',['Auto Round Rewards']='Collect rewards after a round.',['Daily Rewards']='Claim daily check-in rewards.',['Lobby Rewards']='Claim available lobby rewards.',['Battle Pass Rewards']='Claim available unlocked tiers.',['Level Rewards']='Claim rewards for player levels.',['Redeem Codes']='Try supported unclaimed codes.'}
 local visible={}
 for _,g in ipairs(uiGroups) do for i=2,#g do visible[g[i][1]]=true end end
 local numeric={['Stop Skip At Wave']=true,['End Infinite At Wave']=true}
@@ -12798,6 +12837,7 @@ local function apply(conf,save)
    if value~=nil and S[field]~=value then
     if field=='infiniteEndReturnLobby' then S.setInfiniteEndReturnLobby(value)
     elseif field=='infiniteEndLetBaseFall' then S.setInfiniteEndReturnLobby(not value)
+     elseif field=='infiniteEndVoteLose' then S.setInfiniteEndVoteLose(value)
     elseif field=='autoJoinInfinite' then S.setAutoJoinInfinite(value)
     elseif field=='storyAutomationEnabled' then S.setStoryAutomation(value)
     elseif field=='autoFarmXP' then S.setAutoFarmXP(value)
@@ -14540,6 +14580,869 @@ end
 
  return true
 end)
+
+getgenv().FyrelithBoot.run('FYRELITH_COMPASS_REQUIREMENTS_V1',function()return assert(loadstring([======================[
+-- FYRELITH_SETUP_SUMMON_PRIORITY_V1
+do
+ local E=getgenv()local cached
+ function E.FyrelithSetupSummonPriority()
+  local c=E.FyrelithCompassRequirements local r=c and c.alive and c.setupSummon
+  if r then return r.enabled==true or r.pending~=nil or r.awaitingResults==true end
+  if cached==nil then
+   cached=false
+   local P=game:GetService('Players').LocalPlayer
+   if P and type(isfile)=='function'and type(readfile)=='function'then
+    local path='AASmartPlacement/setup_summon_'..P.UserId..'.json'
+    if isfile(path)then
+     local ok,v=pcall(function()return game:GetService('HttpService'):JSONDecode(readfile(path))end)
+     cached=not ok or type(v)~='table'or v.userId~=P.UserId or v.enabled==true or v.pending~=nil or v.awaitingResults==true
+    end
+   end
+  end
+  return cached
+ end
+ function E.FyrelithSetupBlocksRequest(name,action)
+  if not E.FyrelithSetupSummonPriority()then return false end
+  return name=='request_join_lobby'or name=='request_lock_level'or name=='request_start_game'or name=='lobby_world_skip'
+   or name=='set_game_finished_vote'and(action=='replay'or action=='next_story')
+ end
+end
+
+-- FYRELITH_COMPASS_REQUIREMENTS_V1
+do
+ local favoritePolicy=assert(loadstring([=================[
+-- FYRELITH_FAVORITE_READ_POLICY_V1: public GET only; incomplete reads never mean false.
+return function(deps)
+ local cursor local seen={} local started=deps.clock()
+ for page=1,20 do
+  if deps.clock()-started>30 then return 'Unverified',nil,'Favorite check timed out. Try again later.',page-1 end
+  local url='https://games.roblox.com/v2/users/'..deps.userId..'/favorite/games?limit=50&sortOrder=Desc'
+  if cursor then url=url..'&cursor='..deps.encode(cursor)end
+  local ok,response=pcall(deps.fetch,url)
+  if not ok or type(response)~='table'then return 'Unverified',nil,'Cannot reach Roblox. Try again later.',page end
+  local status=tonumber(response.StatusCode or response.Status)
+  if status~=200 then
+   return 'Unverified',nil,status==429 and 'Roblox is busy. Recheck later.'or 'Favorite list unavailable or private.',page
+  end
+  local decoded,data=pcall(deps.decode,response.Body or '')
+  if not decoded or type(data)~='table'or type(data.data)~='table'then
+   return 'Unverified',nil,'Favorite response could not be verified.',page
+  end
+  for _,row in pairs(data.data)do
+   if type(row)~='table'then return 'Unverified',nil,'Favorite response could not be verified.',page end
+   local universe=tonumber(row.id)
+   local place=type(row.rootPlace)=='table'and tonumber(row.rootPlace.id)or nil
+   if not universe and not place then return 'Unverified',nil,'Favorite response could not be verified.',page end
+   if universe==deps.universeId or place==deps.placeId then
+    return 'Confirmed',true,'Favorite confirmed by Roblox.',page
+   end
+  end
+  local nextCursor=data.nextPageCursor
+  if nextCursor==nil or nextCursor==''then
+   return 'Not found',false,'Game not found in your available Favorites. Favorite it, then Recheck.',page
+  end
+  if type(nextCursor)~='string'or seen[nextCursor]then
+   return 'Unverified',nil,'Favorite list is incomplete. Try again later.',page
+  end
+  seen[nextCursor]=true cursor=nextCursor
+  if deps.pause then deps.pause(.1)end
+ end
+ return 'Unverified',nil,'Favorite list is long. Full verification is not complete.',20
+end
+
+]=================]))()
+ local E=getgenv()
+ local previousCodeResults=E.FyrelithCompassRequirements and E.FyrelithCompassRequirements.codeResults
+ if E.FyrelithCompassRequirements and E.FyrelithCompassRequirements.Close then E.FyrelithCompassRequirements.Close()end
+ local P=game:GetService('Players').LocalPlayer
+ local H=game:GetService('HttpService')local GroupService=game:GetService('GroupService')
+ local state={alive=true,groupId=10611639,placeId=8304191830,universeId=3183403065,groupStatus='Checking',favoriteStatus='Checking',connections={}}
+ state.gameURL='https://www.roblox.com/games/8304191830/Anime-Adventures'
+ state.groupURL='https://www.roblox.com/communities/10611639/Gomu'
+ E.FyrelithCompassRequirements=state
+ local screen=Instance.new('ScreenGui')screen.Name='FyrelithCompassRequirements'
+ screen.ResetOnSpawn=false screen.IgnoreGuiInset=true screen.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+ screen.DisplayOrder=2000000010 screen.Parent=P:WaitForChild('PlayerGui')
+ local panel=Instance.new('Frame')panel.Name='Requirements'panel.Size=UDim2.fromOffset(680,386)
+ panel.AnchorPoint=Vector2.new(.5,.5)panel.Position=UDim2.fromScale(.5,.5)
+ panel.BackgroundTransparency=1 panel.BorderSizePixel=0 panel.Visible=false panel.Parent=screen
+ local scale=Instance.new('UIScale',panel)
+ local function fit()
+  if state.page then scale.Scale=1 return end
+  local c=workspace.CurrentCamera if c then scale.Scale=math.max(.1,math.min(1,(c.ViewportSize.X-24)/680,(c.ViewportSize.Y-40)/386))end
+ end
+ fit()
+ local function on(signal,fn)local c=signal:Connect(fn)state.connections[#state.connections+1]=c return c end
+ if workspace.CurrentCamera then on(workspace.CurrentCamera:GetPropertyChangedSignal('ViewportSize'),fit)end
+ local function text(parent,name,value,x,y,w,h,size)
+  local t=Instance.new('TextLabel')t.Name=name t.Text=value t.Font=Enum.Font.Gotham
+  t.TextSize=size or 13 t.TextColor3=Color3.fromRGB(231,220,242)t.TextXAlignment=Enum.TextXAlignment.Left
+  t.TextWrapped=true t.BackgroundTransparency=1 t.Position=UDim2.fromOffset(x,y)t.Size=UDim2.fromOffset(w,h)t.Parent=parent return t
+ end
+ text(panel,'Title','Compass setup',20,5,640,34,24)
+ text(panel,'Help','Group, Favorite and code redemption status',20,38,640,20,12)
+ local function row(name,y,title,hint)
+  local frame=Instance.new('Frame')frame.Name=name frame.Position=UDim2.fromOffset(20,y)frame.Size=UDim2.fromOffset(640,58)
+  frame.BackgroundColor3=Color3.fromRGB(16,12,23)frame.BorderSizePixel=0 frame.Parent=panel
+  Instance.new('UICorner',frame).CornerRadius=UDim.new(0,12)
+  text(frame,'Title',title,16,3,265,25,14)
+  text(frame,'Hint',hint,16,28,265,24,10).TextColor3=Color3.fromRGB(173,157,191)
+  local chip=text(frame,'State','Checking',300,13,142,32,11)
+  chip.TextXAlignment=Enum.TextXAlignment.Center chip.BackgroundTransparency=0
+  chip.BackgroundColor3=Color3.fromRGB(39,30,49)Instance.new('UICorner',chip).CornerRadius=UDim.new(1,0)
+  return frame,chip
+ end
+ local groupRow,group=row('Group',65,'Gomu community','Official Anime Adventures community')
+ local favoriteRow,favorite=row('Favorite',129,'Anime Adventures','Your Roblox Favorite status')
+ local message=text(panel,'Status','Checking your Roblox account...',20,315,640,24,10)
+ local function paint(chip,value,verified)
+  chip.Text=value
+  chip.BackgroundColor3=verified and Color3.fromRGB(22,71,48)or Color3.fromRGB(43,32,54)
+  chip.TextColor3=verified and Color3.fromRGB(101,236,165)or Color3.fromRGB(210,188,231)
+ end
+ local function button(parent,name,value,x,y,w,h,fn)
+  local b=Instance.new('TextButton')b.Name=name b.Text=value b.Font=Enum.Font.GothamBold b.TextSize=12
+  b.BackgroundColor3=Color3.fromRGB(199,123,237)b.TextColor3=Color3.fromRGB(28,12,39)
+  b.BorderSizePixel=0 b.Position=UDim2.fromOffset(x,y)b.Size=UDim2.fromOffset(w,h)b.Parent=parent
+  Instance.new('UICorner',b).CornerRadius=UDim.new(0,10)on(b.Activated,fn)return b
+ end
+ local joinButton
+ function state.CheckGroup()
+  if state.checking or not state.alive then return state.member end
+  state.checking=true
+  local ok,member=pcall(P.IsInGroupAsync,P,state.groupId)
+  state.checking=false if not state.alive then return end
+  if ok then state.member=member==true else state.member=nil end
+  state.groupStatus=not ok and 'Unverified'or member and 'Joined'or 'Not joined'
+  paint(group,state.groupStatus,state.member==true)
+  if joinButton then joinButton.Text='Join Group'end
+  if not ok then state.error=tostring(member):sub(1,180)end
+  return state.member
+ end
+ function state.CheckFavorite()
+  if not state.alive or state.favoriteBusy then return end
+  if os.clock()<(state.nextFavoriteCheck or 0)then return state.favoriteVerified end
+  state.favoriteBusy=true state.nextFavoriteCheck=os.clock()+10
+  paint(favorite,'Checking',false)
+  local req=request or http_request or syn and syn.request
+  local status,verified,note,pages
+  if type(req)~='function'then status='Unverified';note='Favorite check unavailable on this device.'
+  else
+   local ok,a,b,c,d=pcall(favoritePolicy,{
+    userId=P.UserId,universeId=state.universeId,placeId=state.placeId,clock=os.clock,pause=task.wait,
+    encode=function(v)return H:UrlEncode(v)end,decode=function(v)return H:JSONDecode(v)end,
+    fetch=function(url)return req({Url=url,Method='GET',Timeout=8})end})
+   if ok then status,verified,note,pages=a,b,c,d else status='Unverified';note='Favorite check interrupted. Try Recheck later.'end
+  end
+  state.favoriteBusy=false if not state.alive then return end
+  state.favoriteStatus=status state.favoriteVerified=verified state.favoritePages=pages state.favoriteCheckedAt=os.time()
+  paint(favorite,status,verified==true)message.Text=note
+  return verified
+ end
+ function state.CheckAll()
+  task.spawn(state.CheckGroup)task.spawn(state.CheckFavorite)
+  if state.RefreshCodes then state.RefreshCodes()end
+ end
+ function state.PromptJoin()
+  if state.prompting or state.favoritePrompting or not state.alive then return end
+  state.prompting=true
+  local ok,err=pcall(function()
+   if state.CheckGroup()==true then message.Text='Gomu membership confirmed.'return end
+   message.Text='Confirm joining Gomu in the Roblox prompt.'
+   state.lastJoinResult=tostring(GroupService:PromptJoinAsync(state.groupId))
+   local member=state.CheckGroup()
+   message.Text=member and 'Gomu membership confirmed.'or 'Joining not confirmed. Recheck or use the group page.'
+  end)
+  state.prompting=false
+  if not ok and state.alive then state.error=tostring(err):sub(1,180);message.Text='Join prompt unavailable. Use the group link.'end
+ end
+ local AvatarEditorService=game:GetService('AvatarEditorService')
+ on(AvatarEditorService.PromptSetFavoriteCompleted,function(result)
+  if not state.favoritePrompting or not state.alive then return end
+  state.favoritePrompting=false state.lastFavoritePromptResult=tostring(result)
+  message.Text='Checking Favorite status with Roblox...'
+  task.delay(2,function()
+   if not state.alive then return end
+   state.nextFavoriteCheck=0 state.CheckFavorite()
+  end)
+ end)
+ function state.PromptFavorite()
+  if not state.alive or state.favoritePrompting or state.prompting then return end
+  if os.clock()<(state.nextFavoritePrompt or 0)then return end
+  state.nextFavoritePrompt=os.clock()+3
+  state.favoritePrompting=true
+  message.Text='Confirm Favorite in the Roblox prompt.'
+  local ok,err=pcall(function()
+   AvatarEditorService:PromptSetFavorite(state.placeId,Enum.AvatarItemType.Asset,true)
+  end)
+  if not ok then
+   state.favoritePrompting=false state.favoritePromptError=tostring(err):sub(1,180)
+   message.Text='Favorite prompt unavailable. Use Copy game link.'
+  else
+   local attempt=state.nextFavoritePrompt
+   task.delay(120,function()
+    if state.alive and state.favoritePrompting and state.nextFavoritePrompt==attempt then
+     state.favoritePrompting=false message.Text='Use Recheck status to verify your Favorite.'
+    end
+   end)
+  end
+ end
+ function state.OpenRedeem()
+  if not state.alive or state.redeemOpening then return end
+  state.redeemOpening=true
+  task.spawn(function()
+   local ok,err=pcall(function()
+    local L=require(game.ReplicatedStorage.src.Loader)
+    if not L.IsLobby then message.Text='Redeem codes in the lobby.'return end
+    local G=L.load_client_service(script,'GUIService')local native=G.codes_ui
+    assert(native and type(native.toggle)=='function','Codes window unavailable')
+    if not native.IsOpen then native:toggle(true)end
+    assert(native.IsOpen,'Codes window did not open')
+    local center=E.AAFyrelithCenter local w=center and center.window
+    if w and w.Parent then
+     state.redeemWindow=w state.redeemWasVisible=w.Visible w.Visible=false
+    end
+    while state.alive and native.IsOpen and native.screenGUI and native.screenGUI.Parent do task.wait(.2)end
+   end)
+   if state.redeemWindow and state.redeemWindow.Parent then state.redeemWindow.Visible=state.redeemWasVisible end
+   state.redeemWindow=nil state.redeemOpening=false
+   if not ok and state.alive then state.redeemError=tostring(err):sub(1,180);message.Text='Cannot open codes yet. Try again in the lobby.'end
+  end)
+ end
+ local codes={'2MILLIONFAVES','SUMMERCOMEBACK','CELESTIALCOMPASSU21','AACOMEBACK','APRILFOOLS'}
+ state.redeemCodes=codes state.codeResults=previousCodeResults or {}
+ local codesPanel=Instance.new('Frame')codesPanel.Name='RedeemCodesPage'
+ codesPanel.Position=UDim2.fromOffset(20,195)codesPanel.Size=UDim2.fromOffset(640,120)
+ codesPanel.BackgroundTransparency=1 codesPanel.BorderSizePixel=0 codesPanel.Visible=true codesPanel.Parent=panel
+ text(codesPanel,'Title','REDEEM CODES',0,0,300,18,11)
+ local codeLabels={}
+ for i,code in ipairs(codes)do
+  text(codesPanel,'Code'..i,code,0,18+(i-1)*20,305,20,11)
+  codeLabels[i]=text(codesPanel,'Result'..i,'Checking...',310,18+(i-1)*20,330,20,11)
+ end
+ local codeNote=message
+ local redeemAll
+ local function claimed(code)
+  local S=E.AASmartPlacement
+  local ok,s=pcall(function()return S.playerSession()end)
+  local list=ok and s and s.profile_data and s.profile_data.redeemed_codes
+  if type(list)~='table'then return nil end
+  for k,v in pairs(list)do if k==code and v~=false or v==code then return true end end
+  return false
+ end
+ function state.RefreshCodes()
+  for i,code in ipairs(codes)do
+   local yes=claimed(code)local result=state.codeResults[code]
+   local label=codeLabels[i]
+   if yes then label.Text='Redeemed';label.TextColor3=Color3.fromRGB(101,236,165)
+   elseif yes==nil then label.Text='Status unavailable';label.TextColor3=Color3.fromRGB(210,188,231)
+   elseif result and result~='Already redeemed'and result~='Confirmed redeemed'then
+    label.Text=result=='Submitted; reward not yet confirmed'and 'Not confirmed'or result
+    label.TextColor3=Color3.fromRGB(230,196,126)
+   else label.Text='Not redeemed';label.TextColor3=Color3.fromRGB(173,157,191)end
+  end
+ end
+ function state.RedeemAll()
+  local S=E.AASmartPlacement
+  if state.codesBusy or not state.alive then return end
+  if S and S.codeRedeemBusy then codeNote.Text='Another code request is running. Try again shortly.'return end
+  local L=require(game.ReplicatedStorage.src.Loader)
+  if not L.IsLobby then codeNote.Text='Return to the lobby to redeem codes.'return end
+  state.codesBusy=true if S then S.codeRedeemBusy=true end
+  redeemAll.Text='Redeeming...'
+  task.spawn(function()
+   local ok,err=pcall(function()
+    local EP=L.load_client_service(script,'EndpointsClient')
+    for i,code in ipairs(codes)do
+     if not state.alive then break end
+     local label=codeLabels[i]
+     if claimed(code)then label.Text='Already redeemed'
+     else
+      label.Text='Submitting...'
+      local success,reply=pcall(EP.invoke_server,'redeem_code',code)
+      task.wait(1)
+      local note
+      if claimed(code)then note='Confirmed redeemed'
+      elseif not success then note='Request error; verify before retrying'
+      elseif reply=='needs_social'then note='Complete Group / Favorite requirements'
+      elseif type(reply)=='string'and reply~=''then note=reply:sub(1,100)
+      else note='Submitted; reward not yet confirmed'end
+      label.Text=note state.codeResults[code]=note
+      task.wait(1)
+     end
+    end
+   end)
+   if S then S.codeRedeemBusy=false end
+   state.codesBusy=false
+   if state.alive then
+    redeemAll.Text='Redeem All' state.RefreshCodes()
+    codeNote.Text=ok and 'Finished checking the five codes. See each result above.'or 'Code request interrupted. Verify rewards before trying again.'
+    if not ok then state.codeError=tostring(err):sub(1,180)end
+   end
+  end)
+ end
+ redeemAll=button(panel,'RedeemAll','Redeem All',180,344,150,32,state.RedeemAll)
+ button(panel,'OtherCode','Enter other code',345,344,150,32,state.OpenRedeem)
+ function state.ShowCodes()state.RefreshCodes()end
+ state.codesPanel=codesPanel
+ state.RefreshCodes()
+ -- FYRELITH_AUTO_COMPASS_V1
+ local compassId='celestial_compass_u21'
+ local compassPath='AASmartPlacement/setup_compass_'..P.UserId..'.json'
+ local cfg={enabled=false}
+ do
+  local ok,v=pcall(function()return H:JSONDecode(readfile(compassPath))end)
+  if ok and type(v)=='table'and v.userId==P.UserId then
+   cfg.enabled=v.enabled==true cfg.target=type(v.target)=='string'and v.target or nil
+   cfg.pending=type(v.pending)=='table'and v.pending or nil
+  end
+ end
+ state.compassConfig=cfg state.compassOptions={} state.compassAllowed={}
+ local cp=Instance.new('Frame')cp.Name='AutoCompassPage'cp.Size=UDim2.fromScale(1,1)
+ cp.ZIndex=20 cp.BackgroundColor3=Color3.fromRGB(10,7,16)cp.BorderSizePixel=0 cp.Visible=false cp.Parent=panel
+ state.compassPanel=cp
+ text(cp,'Title','Auto Use Celestial Compass',20,5,640,34,21)
+ local selection=text(cp,'Selection','Select a Mythic below',20,44,640,32,12)
+ local search=Instance.new('TextBox')search.Name='Search' search.PlaceholderText='Search Mythic...'
+ search.Text=''search.ClearTextOnFocus=false search.Font=Enum.Font.Gotham search.TextSize=12
+ search.BackgroundColor3=Color3.fromRGB(32,23,43)search.TextColor3=Color3.fromRGB(231,220,242)
+ search.BorderSizePixel=0 search.Position=UDim2.fromOffset(20,83)search.Size=UDim2.fromOffset(640,30)search.Parent=cp
+ Instance.new('UICorner',search).CornerRadius=UDim.new(0,8)
+ local list=Instance.new('ScrollingFrame')list.Name='Mythics'list.BackgroundTransparency=1 list.BorderSizePixel=0
+ list.Position=UDim2.fromOffset(20,120)list.Size=UDim2.fromOffset(640,166)list.CanvasSize=UDim2.new()
+ list.ScrollBarThickness=4 list.Parent=cp
+ local note=text(cp,'Status','Checking Compass...',20,286,640,28,10)
+ local toggle local optionButtons={}
+ local function saveCompass()
+  return pcall(function()
+   if not isfolder('AASmartPlacement')then makefolder('AASmartPlacement')end
+   writefile(compassPath,H:JSONEncode({version=1,userId=P.UserId,enabled=cfg.enabled,target=cfg.target,pending=cfg.pending}))
+  end)
+ end
+ local function paintSelection()
+  local name=state.compassAllowed[cfg.target]
+  selection.Text='Target: '..(name or cfg.target or 'Not selected')..'  |  Special banner only'
+  if toggle then toggle.Text='Auto Use: '..(cfg.enabled and 'ON'or 'OFF')end
+  for id,b in pairs(optionButtons)do
+   b.BackgroundColor3=id==cfg.target and Color3.fromRGB(199,123,237)or Color3.fromRGB(40,28,54)
+   b.TextColor3=id==cfg.target and Color3.fromRGB(28,12,39)or Color3.fromRGB(231,220,242)
+  end
+ end
+ function state.SelectCompassTarget(id)
+  if state.setupSummon and(state.setupSummon.enabled or state.setupSummon.pending)then note.Text='Turn Auto Summon OFF and settle any purchase before changing target.'return false end
+  if not state.compassAllowed[id]then return false end
+  if cfg.pending then note.Text='A previous pick is unresolved. Recheck before changing targets.'return false end
+  cfg.target=id saveCompass()paintSelection()
+  note.Text='Target saved. Auto Use sets the pick; it does not buy summons.'
+  return true
+ end
+ local function filterCompass()
+  local query=string.lower(search.Text)local index=0
+  for _,row in ipairs(state.compassOptions)do
+   local b=optionButtons[row.id]
+   b.Visible=query==''or string.find(string.lower(row.name..' '..row.id),query,1,true)~=nil
+   if b.Visible then b.Position=UDim2.fromOffset(0,index*32)index+=1 end
+  end
+  list.CanvasSize=UDim2.fromOffset(0,index*32)
+ end
+ on(search:GetPropertyChangedSignal('Text'),filterCompass)
+ -- Update21 eligible IDs captured from get_celestial_compass_units on 2026-11-11.
+ local cachedCompassIds={'gojo','gildarts','armin','itadori','katakuri','julius','tatsumaki','metal_knight','itachi_2','escanor_weak','frieza_golden','gyutaro','tengen_2','law_2','usopp_ts','hoshino_2','leafa','guts','griffith','albedo','shalltear','demiurge','narberal','josuke_2','kira','koichi','saber','archer','illya','medea','sasuke_3','konan_unit','naruto_sage','goku_ssj3','vegeta_majin','shanks','levi','meliodas','shigaraki','bee_girl','ghostkun','gremmy','grimmjow_res','elyssia','hakari','megumi2','giselle','sato'}
+ local compassCachePath='AASmartPlacement/compass_options_u21_v1.json'
+ function state.LoadCompassOptions()
+  if state.compassLoading or not state.alive then return end
+  local L=require(game.ReplicatedStorage.src.Loader)
+  if state.compassOptionsLoaded and(state.compassOptionsLive or not L.IsLobby)then return end
+  state.compassLoading=true
+  local ok,err=pcall(function()
+   local U=L.load_data(script,'Units')local ids local source
+   if L.IsLobby then
+    local EP=L.load_client_service(script,'EndpointsClient')
+    local loaded,value=pcall(EP.invoke_server,'get_celestial_compass_units',compassId)
+    if loaded and type(value)=='table'and #value>0 then
+     ids=value source='game'
+     pcall(function()
+      if not isfolder('AASmartPlacement')then makefolder('AASmartPlacement')end
+      E.FyrelithBoot.write(compassCachePath,H:JSONEncode({version=1,universeId=3183403065,item=compassId,ids=ids,updated=os.time()}))
+     end)
+    end
+   end
+   if not ids then
+    local valid,cached=pcall(function()return H:JSONDecode(readfile(compassCachePath))end)
+    if valid and type(cached)=='table'and cached.version==1 and cached.universeId==3183403065 and cached.item==compassId and type(cached.ids)=='table'and #cached.ids>0 then
+     ids=cached.ids source='cache'
+    else ids=cachedCompassIds source='bundled'end
+   end
+   local rows={}local allowed={}
+   for _,id in ipairs(ids)do
+    if type(id)=='string'and U[id]and not allowed[id]then
+     allowed[id]=U[id].name or id rows[#rows+1]={id=id,name=allowed[id]}
+    end
+   end
+   assert(#rows>0,'Compass selection empty')
+   table.sort(rows,function(a,b)return a.name<b.name end)
+   for _,button in pairs(optionButtons)do button:Destroy()end
+   optionButtons={}state.compassOptions=rows state.compassAllowed=allowed
+   for _,row in ipairs(rows)do
+    local id=row.id
+    local b=button(list,id,row.name,0,0,630,28,function()state.SelectCompassTarget(id)end)
+    b.TextXAlignment=Enum.TextXAlignment.Left optionButtons[id]=b
+   end
+   state.compassOptionsLoaded=true state.compassOptionsLive=source=='game' state.compassOptionsSource=source
+   filterCompass()paintSelection()
+  end)
+  state.compassLoading=false
+  if not ok then state.compassError=tostring(err):sub(1,180);note.Text='Cannot load Compass names. Try Recheck.'end
+ end
+ function state.CompassStep()
+  if not state.alive or state.compassBusy then return end
+  state.compassBusy=true
+  local ok,err=pcall(function()
+   local L=require(game.ReplicatedStorage.src.Loader)
+   if not L.IsLobby then
+    state.LoadCompassOptions()note.Text='Names available in this stage. Auto Use applies after returning to lobby.'return
+   end
+   local S=E.AASmartPlacement local s=S and S.playerSession()
+   local profile=s and s.profile_data
+   if not profile then note.Text='Waiting for player data.'return end
+   local SS=L.load_client_service(script,'SummonServiceClient')
+   local owned=tonumber(SS.get_owned_celestial_compasses(compassId))
+   state.compassOwned=owned state.compassActivePick=profile._celestial_compass_pick
+   state.compassActiveItem=profile._celestial_compass_item
+   if cfg.pending and profile._celestial_compass_pick==cfg.pending.target and profile._celestial_compass_item==compassId then
+    cfg.pending=nil saveCompass()
+   end
+   if not cfg.enabled then note.Text='Auto Use OFF  |  Compass: '..tostring(owned or '?')return end
+   if not cfg.target then note.Text='Select a Mythic first.'return end
+   if not state.compassOptionsLive then note.Text='Verifying eligible Mythics in lobby...'state.LoadCompassOptions()return end
+   if not state.compassAllowed[cfg.target]then note.Text='Target is no longer eligible. Select another Mythic.'return end
+   if owned==nil then note.Text='Cannot verify Compass quantity.'return end
+   if owned<1 then note.Text='Waiting for Celestial Compass (Update 21).'return end
+   if profile._celestial_compass_item==compassId and profile._celestial_compass_pick==cfg.target then
+    note.Text='ACTIVE: '..state.compassAllowed[cfg.target]..' | Waiting for the next Mythic from Special.\nCompass stays in inventory until it triggers. Remaining: '..owned
+    state.compassConfirmedTarget=cfg.target return
+   end
+   state.compassConfirmedTarget=nil
+   if cfg.pending then note.Text='Pick sent; waiting for game confirmation. No duplicate request.'return end
+   if not S.coreReady then note.Text='Waiting for player setup to be ready.'return end
+   if type(profile._celestial_compass_pick)=='string'and profile._celestial_compass_item~=compassId then
+    note.Text='Another Compass has an active pick. Keeping that pick.'return
+   end
+   if S.codeRedeemBusy or state.codesBusy or state.prompting or state.favoritePrompting then note.Text='Waiting for current setup action.'return end
+   cfg.pending={target=cfg.target,time=os.time()}
+   if not saveCompass()then cfg.pending=nil note.Text='Cannot save pending pick. No request sent.'return end
+   local EP=L.load_client_service(script,'EndpointsClient')
+   state.compassRequests=(state.compassRequests or 0)+1
+   local sent,reply=pcall(EP.invoke_server,'set_celestial_compass_pick',compassId,cfg.target)
+   state.compassLastReply=tostring(reply):sub(1,120)
+   -- Confirmation is read from profile on the next tick, never inferred from pcall.
+   note.Text=sent and 'Pick sent; checking game confirmation...'or 'Request interrupted; checking the existing pick before any retry.'
+  end)
+  state.compassBusy=false
+  if not ok and state.alive then state.compassError=tostring(err):sub(1,180);note.Text='Compass check failed. No automatic duplicate request.'end
+ end
+ function state.SetAutoCompass(enabled)
+  if enabled and not state.compassAllowed[cfg.target]then note.Text='Select an eligible Mythic first.'return false end
+  cfg.enabled=enabled==true saveCompass()paintSelection()task.spawn(state.CompassStep)return true
+ end
+ toggle=button(cp,'AutoUse','Auto Use: OFF',20,340,145,34,function()state.SetAutoCompass(not cfg.enabled)end)
+ button(cp,'Recheck','Recheck',350,340,145,34,function()task.spawn(state.LoadCompassOptions)task.spawn(state.CompassStep)end)
+ button(cp,'Back','Back',510,340,150,34,function()cp.Visible=false end)
+ button(panel,'AutoCompass','Auto Compass',300,5,165,30,function()
+  cp.Visible=true task.spawn(state.LoadCompassOptions)task.spawn(state.CompassStep)
+ end)
+ paintSelection()
+ task.spawn(function()
+  while state.alive do
+   if cfg.enabled or cp.Visible then state.CompassStep()end
+   task.wait(3)
+  end
+ end)
+
+ -- Independent Setup summon journal; shares the purchase owner and native receipts.
+ local summonPath='AASmartPlacement/setup_summon_'..P.UserId..'.json'
+ local run={enabled=false,pulls=0,spent=0}
+ do
+  local ok,v=pcall(function()return H:JSONDecode(readfile(summonPath))end)
+  if ok and type(v)=='table'and v.userId==P.UserId and v.version==1 then
+   run.enabled=v.enabled==true run.pulls=tonumber(v.pulls)or 0 run.spent=tonumber(v.spent)or 0
+   run.target=type(v.target)=='string'and v.target or nil
+   run.reason=type(v.reason)=='string'and v.reason or nil
+   run.awaitingResults=v.awaitingResults==true
+   if type(v.pending)=='table'and type(v.pending.id)=='string'and type(v.pending.beforeOwned)=='table'and (v.pending.batch==1 or v.pending.batch==10) then run.pending=v.pending end
+  elseif isfile(summonPath)then run.invalid=true end
+ end
+ state.setupSummon=run
+ local summonStatus=text(cp,'SummonStatus',run.reason or 'Auto Summon OFF',20,316,640,22,10)
+ local summonToggle
+ local function saveSetupSummon()
+  run.version=1 run.userId=P.UserId
+  local encoded=H:JSONEncode(run)
+  E.FyrelithBoot.write(summonPath,encoded)
+  local saved=H:JSONDecode(readfile(summonPath))
+  assert(saved.userId==P.UserId and saved.enabled==run.enabled,'Setup summon journal verification failed')
+  if run.pending then assert(saved.pending and saved.pending.id==run.pending.id,'Setup pending purchase not saved')end
+ end
+ local function paintSetupSummon()
+  if summonToggle then summonToggle.Text='Auto Summon: '..(run.enabled and 'ON'or 'OFF')end
+ end
+ local function stopSetupSummon(reason)
+  run.enabled=false run.reason=reason saveSetupSummon()paintSetupSummon()
+  summonStatus.Text=reason
+ end
+ local function containsTarget(owned,target)
+  for _,row in pairs(owned or{})do if type(row)=='table'and row.unit_id==target then return true end end
+  return false
+ end
+ function state.SetSetupSummon(enabled)
+  if enabled then
+   if run.invalid then summonStatus.Text='Journal unavailable; no summons sent.'return false end
+   if type(cfg.target)~='string'or cfg.target==''then summonStatus.Text='Select a Compass target in the lobby first.'return false end
+   if state.compassOptionsLoaded and not state.compassAllowed[cfg.target]then summonStatus.Text='Selected target is not eligible for this Compass.'return false end
+   if run.pending and run.target~=cfg.target then summonStatus.Text='Previous purchase pending. Cannot change target.'return false end
+   local D=E.AASummonDex
+   if D and(D.running or D.watchArmed or D.pendingPurchase)then summonStatus.Text='Stop Summon Dex before starting Setup summons.'return false end
+   local controller=E.AASmartPlacement
+   local ok,s=pcall(function()return controller.playerSession()end)
+   local owned=ok and s and s.collection and s.collection.collection_profile_data and s.collection.collection_profile_data.owned_units
+   if owned and containsTarget(owned,cfg.target)then
+    run.target=cfg.target stopSetupSummon('Target already owned. Choose another target; no summon started.')return false
+   end
+   run.target=cfg.target run.reason=nil
+  end
+  run.enabled=enabled==true
+  local ok,err=pcall(saveSetupSummon)
+  if not ok then run.enabled=false paintSetupSummon()summonStatus.Text='Cannot save authorization. No purchase started.'return false end
+  paintSetupSummon()
+  summonStatus.Text=run.enabled and 'Auto Summon ON: returning to lobby if currently in a stage.'or 'Auto Summon OFF; any sent purchase will still be checked.'
+  if run.enabled and state.SetupSummonReturnTick then task.spawn(state.SetupSummonReturnTick)end
+  return true
+ end
+ function state.SetupSummonStep()
+  if not state.alive or state.setupSummonBusy or run.invalid then return end
+  if not run.enabled and not run.pending and not run.awaitingResults then return end
+  state.setupSummonBusy=true
+  local ok,err=pcall(function()
+   local L=require(game.ReplicatedStorage.src.Loader)
+   if not L.IsLobby then
+    if state.SetupSummonReturnTick then state.SetupSummonReturnTick()end
+    summonStatus.Text='Auto Summon priority: returning to lobby now.'return
+   end
+   local S=E.AASmartPlacement local session=S and S.playerSession()
+   local collection=session and session.collection and session.collection.collection_profile_data
+   local profile=session and session.profile_data
+   local stats=P:FindFirstChild('_stats')local gems=stats and stats:FindFirstChild('gem_amount')
+   local balance=gems and tonumber(gems.Value)
+   if not S or not S.coreReady or not collection or type(collection.owned_units)~='table'or not balance then summonStatus.Text='Waiting for player data.'return end
+   local receipts=E.FyrelithHatchReceipts
+   assert(receipts and receipts.installed,'Native receipt observer unavailable')
+   if run.pending then
+    local pending=run.pending
+    if E.AASummonPurchaseOwner and E.AASummonPurchaseOwner~=pending.id then summonStatus.Text='Waiting for another purchase to settle.'return end
+    E.AASummonPurchaseOwner=pending.id receipts.pending[pending.id]=pending
+    receipts.persist[pending.id]=saveSetupSummon
+    local snapshot={owned=collection.owned_units,balance=balance,exclusivePurchaseId=pending.job==game.JobId and pending.id or nil}
+    snapshot=receipts.snapshot(pending,snapshot)
+    local decision=E.AALiveAuditModules.purchaseEvidence(pending,snapshot)
+    if decision~='CONFIRMED'then summonStatus.Text='Purchase pending confirmation; no duplicate request.'return end
+    local hit=containsTarget(snapshot.owned,run.target)
+    run.pulls+=pending.batch run.spent+=pending.cost run.pending=nil run.awaitingResults=true
+    if hit then run.enabled=false run.reason='Target obtained. Auto Summon stopped.'end
+    local saved,why=pcall(saveSetupSummon)
+    if not saved then run.pending=pending run.pulls-=pending.batch run.spent-=pending.cost error(why)end
+    receipts.retire(pending.id)
+    if E.AASummonPurchaseOwner==pending.id then E.AASummonPurchaseOwner=nil end
+    paintSetupSummon()
+    summonStatus.Text=hit and run.reason or 'Confirmed pulls: '..run.pulls..' | Gems spent: '..run.spent
+    return
+   end
+   if run.awaitingResults then
+    local native=L.load_client_service(script,'GUIService').summon_ui
+    if native and native.hatching then
+     local info=native.unitInfoGUI
+     if info and info.Enabled and os.clock()>=(state.nextSetupResultClick or 0)then
+      state.nextSetupResultClick=os.clock()+2
+      local input=game:GetService('VirtualInputManager')
+      local y=math.floor(workspace.CurrentCamera.ViewportSize.Y/2)
+      E.FyrelithMouseButtonEvent(input,8,y,0,true,game,0)
+      E.FyrelithMouseButtonEvent(input,8,y,0,false,game,0)
+     end
+     summonStatus.Text='Finishing the confirmed summon result...'return
+    end
+    run.awaitingResults=false saveSetupSummon()
+   end
+   if not run.enabled then return end
+   if containsTarget(collection.owned_units,run.target)then stopSetupSummon('Target already owned. Auto Summon stopped.')return end
+   if cfg.target~=run.target then stopSetupSummon('Compass target changed. Enable again to confirm the new target.')return end
+   if not state.compassOptionsLive then state.LoadCompassOptions()summonStatus.Text='Checking eligible Compass targets in the lobby.'return end
+   if not state.compassAllowed[run.target]then stopSetupSummon('Target is not eligible for this Compass. Select another target.')return end
+   local D=E.AASummonDex
+   if E.AAStarterSummonBusy or E.AAStarterSetupActive or(D and(D.running or D.watchArmed or D.pendingPurchase))then summonStatus.Text='Another summon controller is active; waiting.'return end
+   if E.AASummonPurchaseOwner then summonStatus.Text='Another purchase is pending; waiting.'return end
+   if cfg.pending or state.compassBusy then summonStatus.Text='Waiting for Compass confirmation.'return end
+   local SS=L.load_client_service(script,'SummonServiceClient')
+   local banner=SS.CELESTIAL_COMPASS_BANNER
+   local target,item=SS.get_celestial_compass_pick(banner)
+   if target~=run.target or item~=compassId then summonStatus.Text='Set the selected Compass pick first (Auto Use ON).'return end
+   local native=L.load_client_service(script,'GUIService').summon_ui
+   if native and native.hatching then summonStatus.Text='Waiting for summon animation to finish.'return end
+   if os.clock()<(E.AASummonNextRequestAt or 0)then return end
+   local callback=filtergc('function',{Constants={'buy_from_banner'}},true)
+   local env=callback and getfenv(callback)
+   local def=env and env.Banners and env.Banners[banner]
+   local priceCore=env and env.SummonServiceCore
+   if not def or not def.active or not priceCore or type(priceCore.calculate_hatch_price)~='function'or not def.gem_cost then summonStatus.Text='Waiting for live Special banner Gems price.'return end
+   local price=priceCore.calculate_hatch_price(session,def.gem_cost,'gems')
+   if type(price)~='number'or price~=price or price<=0 or price>=math.huge then summonStatus.Text='Price unavailable; no purchase sent.'return end
+   if balance<price then stopSetupSummon('Not enough Gems. Enable again after collecting Gems.')return end
+   local count=0 local before={}
+   for uuid in pairs(collection.owned_units)do before[uuid]=true count+=1 end
+   local capacity=tonumber(collection.capacity)
+   if not capacity or count>=capacity then summonStatus.Text='Unit storage full or unavailable; no purchase sent.'return end
+   local connected=E.AAConnectionGuard.check(true)
+   if not connected then summonStatus.Text='Game connection unavailable; no purchase sent.'return end
+   local batch=balance>=price*10 and capacity-count>=10 and 10 or 1
+   local batchCost=price*batch
+   local pending={id=H:GenerateGUID(false),batch=batch,cost=batchCost,beforeBalance=balance,beforeOwned=before,banner=banner,currency='gems',time=os.time(),job=game.JobId}
+   run.pending=pending
+   local saved,why=pcall(saveSetupSummon)
+   if not saved then run.pending=nil error(why)end
+   E.AASummonPurchaseOwner=pending.id receipts.pending[pending.id]=pending receipts.persist[pending.id]=saveSetupSummon
+   E.AASummonNextRequestAt=os.clock()+8
+   summonStatus.Text='Summoning '..batch..'x from Special ('..batchCost..' Gems)...'
+   -- The Setup switch is its own explicit authorization; Dex targets and limits are untouched.
+   local remote=game.ReplicatedStorage.endpoints.client_to_server.buy_from_banner
+   local sent,reply=pcall(E.AAConnectionGuard.invoke,remote,banner,batch==10 and 'gems10'or 'gems')
+   state.setupSummonRequests=(state.setupSummonRequests or 0)+1
+   state.setupSummonReply=tostring(reply):sub(1,120)
+   if not sent then summonStatus.Text='Request interrupted; verifying outcome before any further purchase.'end
+  end)
+  state.setupSummonBusy=false
+  if not ok and state.alive then state.setupSummonError=tostring(err):sub(1,180);summonStatus.Text='Summon check failed; no automatic retry of pending purchases.'end
+ end
+ summonToggle=button(cp,'AutoSummon','Auto Summon: OFF',175,340,160,34,function()state.SetSetupSummon(not run.enabled)end)
+ paintSetupSummon()
+ function state.SetupSummonReturnTick()
+  if not run.enabled and not run.pending then
+   if run.awaitingResults then run.awaitingResults=false saveSetupSummon()end
+   return
+  end
+  local L=require(game.ReplicatedStorage.src.Loader)
+  if L.IsLobby then return end
+  if state.setupReturnBusy or os.clock()<(state.setupReturnNext or 0)then return end
+  if not E.AAConnectionGuard.check(true)then return end
+  state.setupReturnNext=os.clock()+15
+  local remote=game.ReplicatedStorage.endpoints.client_to_server:FindFirstChild('teleport_back_to_lobby')
+  if remote then
+   state.setupReturnBusy=true
+   local ok,reply=pcall(E.AAConnectionGuard.invoke,remote)
+   state.setupReturnBusy=false state.setupReturnRequests=(state.setupReturnRequests or 0)+1
+   state.setupReturnError=not ok and tostring(reply):sub(1,150)or nil
+  end
+ end
+ local originalInvoke=E.AAInvokeConnected
+ state.originalSetupInvoke=originalInvoke
+ state.setupInvokeWrapper=function(remote,action,...)
+  if E.FyrelithSetupBlocksRequest(remote and remote.Name,action)then
+   local S=E.AASmartPlacement if S then S.navigationBlockReason='Setup Auto Summon has priority over entering/continuing stages'end
+   return false,'SETUP_SUMMON_PRIORITY'
+  end
+  return originalInvoke(remote,action,...)
+ end
+ E.AAInvokeConnected=state.setupInvokeWrapper
+ local controller=E.AASmartPlacement
+ if controller then
+  state.originalSetupNav=controller.lobbyNavigationGate
+  state.setupNavWrapper=function(...)
+   if E.FyrelithSetupSummonPriority()then return 'Setup Auto Summon has priority; waiting for summons/results'end
+   return state.originalSetupNav(...)
+  end
+  controller.lobbyNavigationGate=state.setupNavWrapper
+ end
+ task.spawn(function()
+  while state.alive do state.SetupSummonStep()task.wait(1)end
+ end)
+
+ local link
+ function state.CopyURL(url)
+  link.Text=url local copy=setclipboard or toclipboard
+  if type(copy)~='function'then message.Text='Select and copy the link below.'return false end
+  local ok=pcall(copy,url)
+  message.Text=ok and 'Link copied. Open it in Roblox, then Recheck your status.'or 'Copy unavailable. Select the link below.'
+  return ok
+ end
+ button(panel,'GameLink','Copy game link',480,5,180,30,function()state.CopyURL(state.gameURL)end)
+ joinButton=button(groupRow,'JoinGomu','Join Group',464,11,160,36,state.PromptJoin)
+ button(favoriteRow,'FavoriteLink','Favorite',464,11,160,36,state.PromptFavorite)
+ button(panel,'Recheck','Recheck status',20,344,145,32,state.CheckAll)
+ button(panel,'GroupLink','Copy group link',510,344,150,32,function()state.CopyURL(state.groupURL)end)
+ link=Instance.new('TextBox')link.Visible=false link.Name='RobloxLink'link.Text=state.gameURL link.ClearTextOnFocus=false
+ link.Font=Enum.Font.Gotham link.TextSize=11 link.TextColor3=Color3.fromRGB(191,171,211)
+ link.BackgroundColor3=Color3.fromRGB(19,14,27)link.BorderSizePixel=0 link.Position=UDim2.fromOffset(330,340)
+ link.Size=UDim2.fromOffset(330,28)link.Parent=panel Instance.new('UICorner',link).CornerRadius=UDim.new(0,7)
+ state.groupLabel=group state.favoriteLabel=favorite
+ function state.Open()
+  if not state.alive then return end
+  local c=E.AAFyrelithCenter
+  if c and state.page then c.openPage('setup')else panel.Visible=true end
+  fit()task.spawn(state.CheckAll)
+ end
+ function state.Attach()
+  if state.entry and state.entry.Parent then return true end
+  local c=E.AAFyrelithCenter local w=c and c.window
+  if not w then return false end
+  local page=Instance.new('Frame')page.Name='CompassSetupPage'
+  page.BackgroundTransparency=1 page.BorderSizePixel=0 page.Visible=false
+  page.Position=UDim2.fromOffset(20,66)page.Size=UDim2.new(1,-40,1,-82)page.Parent=w
+  state.page=page panel.Parent=page panel.Position=UDim2.fromScale(.5,.5)panel.Visible=true
+  scale.Scale=1 local closeButton=panel:FindFirstChild('Close')if closeButton then closeButton.Visible=false end
+  state.entry=button(w,'CompassNavigation','Setup',598,13,68,32,state.Open)
+  state.entry.ZIndex=40 state.entry.TextSize=13 state.entry.Font=Enum.Font.GothamMedium
+  state.entry.BackgroundTransparency=1 state.entry.TextColor3=Color3.fromRGB(223,211,237)
+  local corner=state.entry:FindFirstChildOfClass('UICorner')if corner then corner.CornerRadius=UDim.new(0,20)end
+  local navigation={{'OverviewNavigation',304,74},{'UnitNavigation',382,40},{'SummonNavigation',426,90},
+   {'Webhook',520,74},{'CompassNavigation',598,68},{'Config',670,58}}
+  state.navBefore={}
+  for _,spec in ipairs(navigation)do
+   local b=w:FindFirstChild(spec[1])
+   if b then
+    if b~=state.entry then
+     state.navBefore[b]={Position=b.Position,Size=b.Size,TextSize=b.TextSize}
+     on(b.Activated,function()
+      page.Visible=false state.entry.BackgroundTransparency=1
+      state.entry.TextColor3=Color3.fromRGB(223,211,237)
+     end)
+    end
+    b.Position=UDim2.fromOffset(spec[2],13)b.Size=UDim2.fromOffset(spec[3],32)b.TextSize=13
+   end
+  end
+  local original=c.openPage state.originalOpen=original state.center=c
+  local wrapped
+  wrapped=function(name,...)
+   page.Visible=false state.entry.BackgroundTransparency=1 state.entry.TextColor3=Color3.fromRGB(223,211,237)
+   if name~='setup'then return original(name,...)end
+   original('home')
+   local inline=E.AAInlineSummon local root=inline and inline.root and inline.root()
+   if root then root.Visible=false end
+   local notice=w:FindFirstChild('SummonLoadStatus')if notice then notice.Visible=false end
+   for _,key in ipairs({'LiveStatus','RuntimeCard','WalletCard','KaiTun','PreviewFooter','WebhookPage','ConfigPage','UnitPage'})do
+    local content=w:FindFirstChild(key)if content then content.Visible=false end
+   end
+   if c.dex then c.dex.Visible=false end
+   if E.FyrelithUnitChoice then E.FyrelithUnitChoice.navSelected='CompassNavigation'end
+   for _,spec in ipairs(navigation)do
+    local b=w:FindFirstChild(spec[1])if b and b~=state.entry then b.BackgroundTransparency=1 end
+   end
+   page.Visible=true c.page='setup'
+   state.entry.BackgroundColor3=Color3.fromRGB(211,165,245)
+   state.entry.BackgroundTransparency=0 state.entry.TextColor3=Color3.fromRGB(24,12,37)
+  end
+  state.wrappedOpen=wrapped c.openPage=wrapped
+  return true
+ end
+ function state.Close()
+  if E.AAInvokeConnected==state.setupInvokeWrapper then E.AAInvokeConnected=state.originalSetupInvoke end
+  local controller=E.AASmartPlacement
+  if controller and controller.lobbyNavigationGate==state.setupNavWrapper then controller.lobbyNavigationGate=state.originalSetupNav end
+  if state.redeemWindow and state.redeemWindow.Parent then state.redeemWindow.Visible=state.redeemWasVisible end
+  state.alive=false
+  for _,c in ipairs(state.connections)do c:Disconnect()end
+  local center=state.center
+  if center and center.openPage==state.wrappedOpen then
+   center.openPage=state.originalOpen
+   if center.page=='setup'then center.openPage('home')end
+  end
+  if state.entry then state.entry:Destroy()end
+  if state.page then state.page:Destroy()end
+  for b,v in pairs(state.navBefore or {})do
+   if b.Parent then b.Position=v.Position b.Size=v.Size b.TextSize=v.TextSize end
+  end
+  screen:Destroy()
+ end
+ state.screen=screen state.panel=panel
+ state.Attach()
+ task.spawn(state.CheckAll)
+end
+
+]======================], 'Fyrelith Compass requirements'))()end)
+getgenv().FyrelithBoot.run('FYRELITH_INFINITE_VOTE_LOSE_V1',function()return assert(loadstring([======================[
+-- FYRELITH_INFINITE_VOTE_LOSE_V1
+do
+ local E=getgenv()local S=assert(E.AASmartPlacement)
+ if E.FyrelithInfiniteVoteLose and E.FyrelithInfiniteVoteLose.Close then E.FyrelithInfiniteVoteLose.Close()end
+ local state={alive=true,round=1,connections={}}E.FyrelithInfiniteVoteLose=state
+ state.previousSnapshot=S.settingsSnapshot
+ S.settingsSnapshot=function(...)
+  local data=state.previousSnapshot(...)data.infiniteEndVoteLose=S.infiniteEndVoteLose==true return data
+ end
+ function S.setInfiniteEndReturnLobby(value)
+  S.infiniteEndReturnLobby=value==true S.infiniteEndLetBaseFall=not S.infiniteEndReturnLobby S.infiniteEndVoteLose=false
+ end
+ function S.setInfiniteEndVoteLose(value)
+  S.infiniteEndVoteLose=value==true
+  if S.infiniteEndVoteLose then S.infiniteEndReturnLobby=false S.infiniteEndLetBaseFall=false
+  elseif not S.infiniteEndLetBaseFall then S.infiniteEndReturnLobby=true end
+ end
+ if S.infiniteEndVoteLose==nil then S.infiniteEndVoteLose=false end
+ function state.ShouldVote(x)
+  return not x.lobby and x.infinite==true and x.enabled==true and x.vote==true
+   and x.finished~=true and x.started==true and x.wave>x.target
+ end
+ function state.ObserveRound(x)
+  if x.finished==true then state.roundEnded=true end
+  if x.started==true and x.finished~=true and(state.roundEnded or state.lastWave and x.wave<state.lastWave)then
+   state.round+=1 state.roundEnded=false state.votedRound=nil state.votedJob=nil state.sent=nil state.lastReply=nil
+  end
+  state.lastWave=x.wave
+ end
+ local data=workspace:FindFirstChild('_DATA')local finished=data and data:FindFirstChild('GameFinished')
+ if finished then
+  state.connections[#state.connections+1]=finished:GetPropertyChangedSignal('Value'):Connect(function()
+   if finished.Value==true then state.roundEnded=true end
+  end)
+ end
+ state.previousExit=S.infiniteExitTick
+ S.infiniteExitTick=function(...)
+  if not S.infiniteEndVoteLose then return state.previousExit(...)end
+  local L=require(game.ReplicatedStorage.src.Loader)
+  local data=workspace:FindFirstChild('_DATA')
+  local started=data and data:FindFirstChild('GameStarted')local finished=data and data:FindFirstChild('GameFinished')
+  local wave=workspace:FindFirstChild('_wave_num')
+  local x={lobby=L.IsLobby,infinite=(L.LevelData or{}).infinite,enabled=S.infiniteEndEnabled,vote=S.infiniteEndVoteLose,
+   started=started and started.Value,finished=finished and finished.Value,wave=wave and tonumber(wave.Value)or 0,target=S.infiniteEndWave or 40}
+  state.ObserveRound(x)
+  if not state.ShouldVote(x)then return false end
+  S.infiniteLetBaseFallActive=false
+  if state.votedRound==state.round then S.infiniteExitStatus='Vote to Lose sent; waiting for game vote result'return true end
+  local endpoint=game.ReplicatedStorage.endpoints.client_to_server:FindFirstChild('vote_lose_game')
+  if not endpoint then S.infiniteExitStatus='Vote to Lose endpoint unavailable; no return or sell action sent'return true end
+  if not E.AAConnectionGuard.check(true)then S.infiniteExitStatus='Vote to Lose waiting for game connection'return true end
+  state.votedJob=game.JobId state.votedRound=state.round
+  local ok,reply=pcall(E.AAConnectionGuard.invoke,endpoint,true)
+  state.lastReply=tostring(reply):sub(1,120)state.sent=ok
+  S.infiniteExitStatus=ok and 'Vote to Lose sent; waiting for game vote result'or 'Vote to Lose request interrupted; no duplicate vote sent'
+  return true
+ end
+ state.exitWrapper=S.infiniteExitTick state.snapshotWrapper=S.settingsSnapshot
+ task.spawn(function()
+  while state.alive and S.alive do
+   if S.infiniteEndEnabled and S.infiniteEndVoteLose then
+    local ok,why=pcall(state.exitWrapper)
+    if not ok then state.lastError=tostring(why):sub(1,180)end
+   end
+   task.wait(2)
+  end
+ end)
+
+ function state.Close()
+  state.alive=false
+  for _,c in ipairs(state.connections)do c:Disconnect()end
+  if S.infiniteExitTick==state.exitWrapper then S.infiniteExitTick=state.previousExit end
+  if S.settingsSnapshot==state.snapshotWrapper then S.settingsSnapshot=state.previousSnapshot end
+ end
+end
+
+]======================]))()end)
 ]========================================]
 E.AASmartPlacementSource=source
 local fn,err=loadstring(source) assert(fn,err)
